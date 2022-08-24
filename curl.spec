@@ -4,8 +4,8 @@
 %global __distfile %([ -f /etc/SuSE-release ] && echo /etc/SuSE-release || echo /etc/redhat-release)
 %global __distinit %(sed -e 's/ release .*//' -e 's/\\([A-Za-z]\\)[^ ]*/\\1/g' %{__distfile} | %{__despace} | %{__lower4})
 %global __distvers %(sed -e 's/.* release \\([^. ]*\\).*/\\1/' %{__distfile} | %{__despace})
-# Identify CentOS Linux and Scientific Linux as rhel
-%if "%{__distinit}" == "c" || "%{__distinit}" == "cl" || "%{__distinit}" == "sl" || "%{__distinit}" == "sls"
+# Identify Alma, CentOS, CentOS Stream and Rocky Linux as rhel
+%if "%{__distinit}" == "a" || "%{__distinit}" == "c" || "%{__distinit}" == "cl" || "%{__distinit}" == "cs" || "%{__distinit}" == "rl"
 %global __distinit rhel
 %endif
 # Dist tag for Fedora is still "fc"
@@ -21,24 +21,18 @@
 %{?_with_nss:		%global disable_nss 0}
 %{?_without_nss:	%global disable_nss 1}
 
-# Build with nss rather than OpenSSL for Fedora 16-26 and RHEL-7 unless OpenSSL is requested
+# Build with nss rather than OpenSSL for Fedora up to 26 and RHEL-7 unless OpenSSL is requested
 # (older distributions don't have recent enough nss versions)
-%global nss_ok %([ '(' 0%{?fedora} -gt 15 -a 0%{?fedora} -lt 27 ')' -o 0%{?rhel} -eq 7 ] && echo 1 || echo 0)
+%global nss_ok %([ '(' -n '%{?fedora}' -a 0%{?fedora} -lt 27 ')' -o 0%{?rhel} -eq 7 ] && echo 1 || echo 0)
 %if %{nss_ok} && !%{disable_nss}
 %global ssl_provider nss
 %global ssl_versionreq >= 3.14.0
 %global use_nss 1
-%global have_openssl_libs 0
 %else
 %global ssl_provider openssl
 %global ssl_versionreq %{nil}
 %global use_nss 0
-# Have openssl-libs (with Epoch of 1) from Fedora 18, RHEL-7 onwards
-%global have_openssl_libs %([ 0%{?fedora} -gt 17 -o 0%{?rhel} -gt 6 ] && echo 1 || echo 0)
 %endif
-
-# Build with Posix threaded DNS lookups rather than using c-ares from Fedora 16, RHEL-7
-%global use_threads_posix %([ 0%{?fedora} -gt 15 -o 0%{?rhel} -gt 6 ] && echo 1 || echo 0)
 
 # Use libidn2 from Fedora 25 onwards
 %global use_libidn2 %([ 0%{?fedora} -gt 24 -o 0%{?rhel} -gt 7 ] && echo 1 || echo 0)
@@ -55,15 +49,31 @@
 %global libssh_minimum_version 1.2
 %endif
 
-# Run the test suite using Python 3 from Fedora 28 onwards
-%if %([ 0%{?fedora} -gt 27 -o 0%{?rhel} -gt 7 ] && echo 1 || echo 0)
-%global test_python python3-devel
+# The krb5-devel packages for Fedora 19 and 20 do not include pkgconfig files,
+# which breaks GSSAPI detection in curl 7.78.0 onwards
+# https://github.com/curl/curl/commit/6fe4e7d3
+%if %([ 0%{?fedora} -ge 19 -a 0%{?fedora} -le 20 ] && echo 1 || echo 0)
+%global no_gssapi_pkgconfig 1
 %else
-%global test_python python2
+%global no_gssapi_pkgconfig 0
 %endif
 
-Version:	7.67.0
-Release:	2.0.kng.%{__distinit}%{__distvers}
+# Test suite wants python-impacket too (TODO get python3-impacket in EPEL-9 and use it)
+%if %([ 0%{?fedora} -gt 28 -o 0%{?rhel} -gt 8 ] && echo 1 || echo 0)
+%global python_impacket python3-impacket
+%endif
+%if %([ 0%{?fedora} -gt 0 -a 0%{?fedora} -le 28 ] && echo 1 || echo 0)
+%global python_impacket %{nil}
+%endif
+%if %([ 0%{?rhel} -gt 0 -a 0%{?rhel} -le 9 ] && echo 1 || echo 0)
+%global python_impacket %{nil}
+%endif
+
+# %%make_build only defined from EL-7, F-21 onwards
+%{!?make_build:%global make_build make %{_smp_mflags} V=1}
+
+Version:	7.84.0
+Release:	2.1.kng.%{__distinit}%{__distvers}
 %if %{compat}
 Summary:	Curl library for compatibility with old applications
 Name:		libcurl%(echo %{version} | tr -d .)
@@ -75,37 +85,32 @@ Name:		curl
 Provides:	webclient
 %endif
 License:	MIT
-Source0:	https://curl.haxx.se/download/curl-%{version}.tar.xz
+Source0:	https://curl.se/download/curl-%{version}.tar.xz
 Source1:	curl-pkg-changelog.old
 
-# Fix infinite loop on upload using a glob (#1771025)
-Patch1:		0001-curl-7.67.0-upload-glob.patch
+# easy_lock.h: include sched.h if available to fix build
+Patch1:		0001-curl-7.84.0-sched-yield.patch
+
+# Fixes for test3026
+Patch2:		https://github.com/curl/curl/commit/945a81e.patch
+Patch3:		https://github.com/curl/curl/commit/0484127.patch
 
 # Patch making libcurl multilib ready
-Patch101:	0101-curl-7.58.0-multilib.patch
-
-# Prevent configure script from discarding -g in CFLAGS (#496778)
-Patch102:	0102-curl-7.54.1-debug.patch
+Patch101:	0101-curl-7.74.0-multilib.patch
 
 # Use localhost6 instead of ip6-localhost in the curl test-suite
-Patch104:	0104-curl-7.64.1-localhost6.patch
-
-# Prevent valgrind from reporting false positives on x86_64
-Patch105:	0105-curl-7.65.0-lib1560-valgrind.patch
+Patch104:	0104-curl-7.76.0-localhost6.patch
 
 # Fix FTBFS when building curl dynamically with no libcurl.so.4 in system
 Patch300:	curl-7.64.1-zsh-cpl.patch
 
 # Remove redundant compiler/linker flags from libcurl.pc
 # Assumes %%{_libdir} = /usr/lib or /usr/lib64 and %%{_includedir} = /usr/include
-Patch302:	0302-curl-7.47.1-pkgconfig.patch
+Patch302:	0302-curl-7.74.0-pkgconfig.patch
 
-URL:		https://curl.haxx.se/
+URL:		https://curl.se/
 %if 0%{?fedora} > 28 || 0%{?rhel} > 7
 BuildRequires:	brotli-devel
-%endif
-%if ! %{use_threads_posix}
-BuildRequires:	c-ares-devel >= 1.6.0
 %endif
 BuildRequires:	coreutils
 BuildRequires:	gcc
@@ -116,15 +121,12 @@ BuildRequires:	libidn2-devel
 BuildRequires:	openldap-devel
 BuildRequires:	pkgconfig
 BuildRequires:	groff
-BuildRequires:	libmetalink-devel
-%if 0%{?fedora} > 22 || 0%{?rhel:1}
-BuildRequires:	libnghttp2-devel
+%if 0%{?fedora} > 24 || 0%{?rhel}
+BuildRequires:	libnghttp2-devel >= 1.12.0
 # nghttpx (an HTTP/2 proxy) is used by the upstream test-suite
 BuildRequires:	nghttp2
 %endif
-%if 0%{?fedora} > 18 || 0%{?rhel} > 6
 BuildRequires:	libpsl-devel
-%endif
 BuildRequires:	%{libssh}-devel >= %{libssh_minimum_version}
 BuildRequires:	make
 BuildRequires:	perl-interpreter
@@ -145,10 +147,16 @@ Requires:	%{_sysconfdir}/pki/tls/certs/ca-bundle.crt
 %endif
 # Test suite requirements
 BuildRequires:	gnutls-utils
+%if 0%{?fedora} > 20 || 0%{?rhel} > 7
+BuildRequires:	hostname
+%else
+BuildRequires:	/bin/hostname
+%endif
 BuildRequires:	openssh-clients
 BuildRequires:	openssh-server
 BuildRequires:	perl(Cwd)
 BuildRequires:	perl(Digest::MD5)
+BuildRequires:	perl(Digest::SHA)
 BuildRequires:	perl(Exporter)
 BuildRequires:	perl(File::Basename)
 BuildRequires:	perl(File::Copy)
@@ -158,16 +166,18 @@ BuildRequires:	perl(MIME::Base64)
 BuildRequires:	perl(Time::Local)
 BuildRequires:	perl(Time::HiRes)
 BuildRequires:	perl(vars)
-BuildRequires:	stunnel
 # python used for http-pipe tests (190x)
-# requires python ≥ 2.7 but fails safely
-BuildRequires:	%{test_python}
+BuildRequires:	python3-devel %{python_impacket}
+
+# stunnel is used by upstream tests but it does not seem to work reliably
+# on s390x and occasionally breaks some tests (mainly 1561 and 1562)
+%ifnarch s390x
+BuildRequires:	stunnel
+%endif
 
 # require at least the version of libpsl that we were built against,
 # to ensure that we have the necessary symbols available (#1631804)
-%if 0%{?fedora} > 18 || 0%{?rhel} > 6
 %global libpsl_version %(pkg-config --modversion libpsl 2>/dev/null || echo 0)
-%endif
 
 # require at least the version of libssh/libssh2 that we were built against,
 # to ensure that we have the necessary symbols available (#525002, #642796)
@@ -175,12 +185,10 @@ BuildRequires:	%{test_python}
 
 # require at least the version of openssl-libs that we were built against,
 # to ensure that we have the necessary symbols available (#1462184, #1462211)
-%if %{have_openssl_libs}
-%global openssl_version %(pkg-config --modversion openssl 2>/dev/null || echo 0)
+# (we need to translate 3.0.0-alpha16 -> 3.0.0-0.alpha16 and 3.0.0-beta1 -> 3.0.0-0.beta1 though)
+%if ! %{use_nss}
+%global openssl_version %({ pkg-config --modversion openssl 2>/dev/null || echo 0;} | sed 's|-|-0.|')
 %endif
-
-# same issue with c-ares
-%global cares_version %(pkg-config --modversion libcares 2>/dev/null || echo 0)
 
 %if ! %{compat}
 %description
@@ -193,19 +201,14 @@ resume, proxy tunneling and a busload of other useful tricks.
 
 %package -n libcurl
 Summary:	A library for getting files from web servers
-# c-ares adds symbols that curl uses if available, so we need to enforce
+# libpsl adds symbols that curl uses if available, so we need to enforce
 # version dependency
-%if ! %{use_threads_posix}
-Requires:	c-ares%{?_isa} >= %{cares_version}
-%endif
-%if 0%{?fedora} > 18 || 0%{?rhel} > 6
 Requires:	libpsl%{?_isa} >= %{libpsl_version}
-%endif
 # libssh/libssh2 adds symbols that curl uses if available, so we need to enforce
 # version dependency
 Requires:	%{libssh}%{?_isa} >= %{libssh_version}
 # same issue with openssl
-%if %{have_openssl_libs}
+%if ! %{use_nss}
 Requires:	openssl-libs%{?_isa} >= 1:%{openssl_version}
 %endif
 # libnsspem.so is no longer included in the nss package from F-23 onwards (#1347336)
@@ -237,10 +240,6 @@ Summary:	Files needed for building applications with libcurl
 Provides:	curl-devel = %{version}-%{release}
 Provides:	curl-devel%{?_isa} = %{version}-%{release}
 Obsoletes:	curl-devel < %{version}-%{release}
-# From Fedora 14, %%{_datadir}/aclocal is included in the filesystem package
-%if 0%{?fedora} < 14
-Requires:	%{_datadir}/aclocal
-%endif
 
 %description -n libcurl-devel
 The libcurl-devel package includes header files and libraries necessary for
@@ -252,6 +251,7 @@ documentation of the library, too.
 Summary:		Conservatively configured build of curl for minimal installations
 Provides:		curl = %{version}-%{release}
 Conflicts:		curl
+Suggests:		libcurl-minimal
 # Using an older version of libcurl could result in CURLE_UNKNOWN_OPTION
 Requires:		libcurl%{?_isa} >= %{version}-%{release}
 RemovePathPostfixes:	.minimal
@@ -268,9 +268,9 @@ be installed.
 Summary:		Conservatively configured build of libcurl for minimal installations
 Provides:		libcurl = %{version}-%{release}
 Provides:		libcurl%{?_isa} = %{version}-%{release}
-Conflicts:		libcurl
+Conflicts:		libcurl%{?_isa}
 RemovePathPostfixes:	.minimal
-%if %{have_openssl_libs}
+%if ! %{use_nss}
 Requires:		openssl-libs%{?_isa} >= 1:%{openssl_version}
 %endif
 
@@ -295,67 +295,85 @@ cp -p %{SOURCE1} .
 
 # Upstream patches
 %patch1 -p1
+%patch2 -p1
+%patch3 -p1
 
 # Fedora Patches
 %patch101 -p1
-%patch102 -p1
 %patch104 -p1
-%patch105 -p1
 
 # Local Patches
 %patch300
 %patch302
 
-# Make tests/*.py use Python 3 from Fedora 28 onwards
-%if "%{test_python}" == "python3-devel"
-sed -e '1 s|^#!/.*python|#!%{__python3}|' -i tests/*.py
+# Temporarily disable tests 300{0,1} on x86_64 (stunnel clashes with itself)
+%if %([ 0%{?fedora} -gt 32 ] && echo 1 || echo 0)
+%ifarch x86_64
+printf "3000\n3001\n" >> tests/data/DISABLED
+%endif
 %endif
 
-# ssh-related tests 582, 600-642, 656, 1446, 2004 fail for as-yet unknown reasons on F-12 to F-15
-# Does not seem to be related to SELinux or use of POSIX threaded DNS resolver
-%if 0%{?fedora} > 11 && 0%{?fedora} < 16
-for test in 582 \
-	600 601 602 603 604 605 606 607 608 609 \
-	610 611 612 613 614 615 616 617 618 619 \
-	620 621 622 623 624 625 626 627 628 629 \
-	630 631     633 634 635 636 637 638 639 \
-	640 641 642 \
-                                656 \
-	1446 1456 2004; do
-	echo $test
-done >> tests/data/DISABLED
+# Some tests fail on 32-bit Fedora 35?
+# Looks to be due to attempted re-use of ports 24718 and 25313 with port already in use on second test run
+%if %([ 0%{?fedora} -eq 35 ] && echo 1 || echo 0)
+%ifnarch x86_64
+printf "1562\n1630\n1631\n1632\n1904\n2050\n2055\n" >> tests/data/DISABLED
+%endif
 %endif
 
 # Adapt test 323 for updated OpenSSL
 sed -i -e 's/^35$/35,52/' tests/data/test323
 
+# Workaround for broken GSSAPI detection in Fedora 19 and Fedora 20
+%if %{no_gssapi_pkgconfig}
+mkdir pkgconfig
+cat << 'MIT_KRB5_PKGCONFIG' > pkgconfig/mit-krb5-gssapi.pc
+prefix=%{_prefix}
+exec_prefix=%{_prefix}
+libdir=%{_libdir}
+includedir=%{_includedir}
+
+Name: mit-krb5-gssapi
+Description: Kerberos implementation of the GSSAPI
+Version: 1.11.3
+Cflags: -I${includedir}
+Libs: -L${libdir} -lgssapi_krb5
+MIT_KRB5_PKGCONFIG
+%endif
+
 %build
+%if %{no_gssapi_pkgconfig}
+export PKG_CONFIG_PATH=$(pwd)/pkgconfig
+%endif
 %if ! %{use_nss}
 export CPPFLAGS="$(pkg-config --cflags openssl)"
 %endif
-[ -x /usr/kerberos/bin/krb5-config ] && KRB5_PREFIX="=/usr/kerberos"
 mkdir build-{full,minimal}
 %global _configure ../configure
 export common_configure_opts=" \
 	--cache-file=../config.cache \
 	--disable-static \
-	--enable-symbol-hiding \
+	--enable-hsts \
 	--enable-ipv6 \
-%if %{use_threads_posix}
+	--enable-symbol-hiding \
 	--enable-threaded-resolver \
+	--without-zstd \
+	--with-gssapi \
+%if %{use_libidn2}
+	--with-libidn2 \
 %else
-	--enable-ares \
+	--without-libidn2 \
 %endif
-	--with-gssapi${KRB5_PREFIX} \
-%if 0%{?fedora} > 22 || 0%{?rhel:1}
+%if 0%{?fedora} > 24 || 0%{?rhel}
 	--with-nghttp2 \
 %endif
 %if %{use_nss}
 	--with-nss \
+	--with-nss-deprecated \
 	--without-ssl \
 	--without-ca-bundle \
 %else
-	--with-ssl \
+	--with-openssl \
 	--with-ca-bundle=%{_sysconfdir}/pki/tls/certs/ca-bundle.crt \
 %endif
 	"
@@ -365,12 +383,23 @@ export common_configure_opts=" \
 (
 	cd build-minimal
 	%configure $common_configure_opts \
+	--disable-dict \
+	--disable-gopher \
+	--disable-imap \
 	--disable-ldap \
 	--disable-ldaps \
 	--disable-manual \
+	--disable-mqtt \
+	--disable-ntlm \
+	--disable-ntlm-wb \
+	--disable-pop3 \
+	--disable-rtsp \
+	--disable-smb \
+	--disable-smtp \
+	--disable-telnet \
+	--disable-tftp \
+	--disable-tls-srp \
 	--without-brotli \
-	--without-libidn2 \
-	--without-libmetalink \
 	--without-libpsl \
 	--without-%{libssh}
 )
@@ -380,21 +409,28 @@ export common_configure_opts=" \
 (
 	cd build-full
 	%configure $common_configure_opts \
+	--enable-dict \
+	--enable-gopher \
+	--enable-imap \
 	--enable-ldap \
 	--enable-ldaps \
 	--enable-manual \
+	--enable-mqtt \
+	--enable-ntlm \
+	--enable-ntlm-wb \
+	--enable-pop3 \
+	--enable-rtsp \
+	--enable-smb \
+	--enable-smtp \
+	--enable-telnet \
+	--enable-tftp \
+	--enable-tls-srp \
 %if 0%{?fedora} > 28 || 0%{?rhel} > 7
 	--with-brotli \
 %else
 	--without-brotli \
 %endif
-%if %{use_libidn2}
-	--with-libidn2 \
-%endif
-	--with-libmetalink \
-%if 0%{?fedora} > 18 || 0%{?rhel} > 6
 	--with-libpsl \
-%endif
 	--with-%{libssh}
 )
 
@@ -409,32 +445,31 @@ sed -i \
 %endif
 
 %if %{build_minimal}
-make %{_smp_mflags} V=1 -C build-minimal
+%{make_build} -C build-minimal
 %endif
-make %{_smp_mflags} V=1 -C build-full
+%{make_build} -C build-full
 
 %install
 %if %{build_minimal}
 # Install and rename the library that will be packaged as libcurl-minimal
-make DESTDIR=%{buildroot} INSTALL="install -p" install -C build-minimal/lib
+%{make_install} -C build-minimal/lib
 rm -f %{buildroot}%{_libdir}/libcurl.{la,so}
 for i in %{buildroot}%{_libdir}/*; do
 	mv -v $i $i.minimal
 done
 
 # Install and rename the executable that will be packaged as curl-minimal
-make DESTDIR=%{buildroot} INSTALL="install -p" install -C build-minimal/src
+%{make_install} -C build-minimal/src
 mv -v %{buildroot}%{_bindir}/curl{,.minimal}
 %endif
 
 # Install the executable and library that will be packaged as curl and libcurl
-make DESTDIR=%{buildroot} INSTALL="install -p" install -C build-full
+%{make_install} -C build-full
 
 # Install zsh completion for curl
 # (we have to override LD_LIBRARY_PATH because we eliminated rpath)
 LD_LIBRARY_PATH="%{buildroot}%{_libdir}:$LD_LIBRARY_PATH" \
-	make DESTDIR=%{buildroot} INSTALL="install -p" \
-	install -C build-full/scripts
+	%{make_install} -C build-full/scripts
 
 # --disable-static not always honoured
 rm -f %{buildroot}%{_libdir}/libcurl.a
@@ -443,19 +478,34 @@ install -m 644 -p docs/libcurl/libcurl.m4 %{buildroot}%{_datadir}/aclocal
 
 %check
 # Skip the (lengthy) checks on EOL Fedora releases (over ~400 days old)
-# Also run on Fedora 13, have seen test failures on F12..F15
-if [ -z "$(find /etc/fedora-release -mtime +400)" %{?rhel:-o rhel} -o "%{?fedora}" = "13" ]; then
-	export LD_LIBRARY_PATH=%{buildroot}%{_libdir}
-	cd build-full/tests
-	make %{?_smp_mflags} V=1
+if [ -z "$(find /etc/fedora-release -mtime +400)" %{?rhel:-o rhel} ]; then
+%if %{build_minimal}
+	%{make_build} V=1 -C build-minimal/tests
+%endif
+	%{make_build} V=1 -C build-full/tests
 
 	# Relax crypto policy for the test-suite to make it pass again (#1610888)
 	export OPENSSL_SYSTEM_CIPHERS_OVERRIDE=XXX
 	export OPENSSL_CONF=
 
-	# Run the upstream test-suite
-	srcdir=../../tests perl -I../../tests ../../tests/runtests.pl -a -p -v '!flaky'
-	cd -
+	# Make runtests.pl work for out-of-tree builds
+	export srcdir=../../tests
+
+	# Run the upstream test-suite for both curl-minimal and curl-full
+%if %{build_minimal}
+	for size in minimal full; do (
+%else
+	for size in full; do (
+%endif
+		cd build-${size}
+
+		# We have to override LD_LIBRARY_PATH because we eliminated rpath
+		export LD_LIBRARY_PATH="${PWD}/lib/.libs"
+
+		cd tests
+		perl -I../../tests ../../tests/runtests.pl -a -p -v '!flaky'
+	)
+	done
 fi
 
 %if %([ 0%{?fedora} -lt 28 -a 0%{?rhel} -lt 8 ] && echo 1 || echo 0)
@@ -473,9 +523,10 @@ fi
 %endif
 
 %files
+%license COPYING
 %doc CHANGES README*
-%doc docs/BUGS docs/DEPRECATE.md docs/FAQ docs/FEATURES docs/SECURITY-PROCESS.md
-%doc docs/TODO docs/RESOURCES docs/TheArtOfHttpScripting
+%doc docs/BUGS.md docs/DEPRECATE.md docs/FAQ docs/FEATURES.md docs/SECURITY-PROCESS.md
+%doc docs/TODO docs/TheArtOfHttpScripting.md
 %doc curl-pkg-changelog.old
 %if ! %{compat}
 %{_bindir}/curl
@@ -483,11 +534,6 @@ fi
 %{_datadir}/zsh/
 %{_mandir}/man1/curl.1*
 %else
-%if 0%{?_licensedir:1}
-%license COPYING
-%else
-%doc COPYING
-%endif
 %exclude %{_bindir}/curl
 %exclude %{_datadir}/zsh/site-functions/_curl
 %exclude %{_mandir}/man1/curl.1*
@@ -496,17 +542,13 @@ fi
 
 %if ! %{compat}
 %files -n libcurl
-%if 0%{?_licensedir:1}
 %license COPYING
-%else
-%doc COPYING
-%endif
 %{_libdir}/libcurl.so.4
 %{_libdir}/libcurl.so.4.[0-9].[0-9]
 
 %files -n libcurl-devel
 %doc docs/examples/*.c docs/examples/Makefile.example docs/INTERNALS.md
-%doc docs/CHECKSRC.md docs/CONTRIBUTE.md docs/libcurl/ABI docs/CODE_STYLE.md
+%doc docs/CHECKSRC.md docs/CONTRIBUTE.md docs/libcurl/ABI.md docs/CODE_STYLE.md
 %doc docs/GOVERNANCE.md
 %{_bindir}/curl-config
 %{_includedir}/curl/
@@ -538,6 +580,2601 @@ fi
 %exclude %{_libdir}/libcurl.la
 
 %changelog
+* Mon Aug  8 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-2.1.cf
+- Add upstream fixes for test3026
+
+* Thu Jul 21 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-2.0.cf
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_37_Mass_Rebuild
+
+* Tue Jun 28 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-1.1.cf
+- Improve workaround for test3026 issues
+
+* Mon Jun 27 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-1.0.cf
+- Update to 7.84.0
+  - curl: Add --rate to set max request rate per time unit
+  - curl: Deprecate --random-file and --egd-file
+  - curl_version_info: Add CURL_VERSION_THREADSAFE
+  - CURLINFO_CAPATH/CAINFO: Get the default CA paths from libcurl
+  - lib: Make curl_global_init() thread-safe when possible
+  - libssh2: Add CURLOPT_SSH_HOSTKEYFUNCTION
+  - opts: Deprecate RANDOM_FILE and EGDSOCKET
+  - socks: Support unix sockets for socks proxy
+  - aws-sigv4: Fix potential NULL pointer arithmetic
+  - bindlocal: Don't use a random port if port number would wrap
+  - c-hyper: Mark status line as status for Curl_client_write()
+  - ci: Avoid 'cmake -Hpath'
+  - ci: Bump FreeBSD 13.0 to 13.1
+  - ci: Update GitHub actions
+  - cmake: Add libpsl support
+  - cmake: Do not add libcurl.rc to the static libcurl library
+  - cmake: Enable curl.rc for all Windows targets
+  - cmake: Fix detecting libidn2
+  - cmake: Support adding a suffix to the OS value
+  - configure: Skip libidn2 detection when winidn is used
+  - configure: Use the SED value to invoke sed
+  - configure: Warn about rustls being experimental
+  - content_encoding: Return error on too many compression steps
+    (CVE-2022-32206)
+  - cookie: Address secure domain overlay
+  - cookie: Apply limits (CVE-2022-32205)
+  - copyright.pl: Parse and use .reuse/dep5 for skips
+  - copyright: Make repository REUSE compliant
+  - curl.1: Add a few see also --tls-max
+  - curl.1: Mention exit code zero too
+  - curl: Re-enable --no-remote-name
+  - curl_easy_pause.3: Remove explanation of progress function
+  - curl_getdate.3: Document that some illegal dates pass through
+  - Curl_parsenetrc: Don't access local pwbuf outside of scope
+  - curl_url_set.3: Clarify by default using known schemes only
+  - CURLOPT_ALTSVC.3: Document the file format
+  - CURLOPT_FILETIME.3: Fix the protocols this works with
+  - CURLOPT_HTTPHEADER.3: Improve comment in example
+  - CURLOPT_NETRC.3: Document the .netrc file format
+  - CURLOPT_PORT.3: We discourage using this option
+  - CURLOPT_RANGE.3: Remove ranged upload advice
+  - digest: Added detection of more syntax errors in server headers
+  - digest: Tolerate missing "realm"
+  - digest: Unquote realm and nonce before processing
+  - DISABLED: Disable 1021 for hyper again
+  - docs/cmdline-opts: Add copyright and license identifier to each file
+  - docs/CONTRIBUTE.md: Document the 'needs-votes' concept
+  - docs: Clarify data replacement policy for MIME API
+  - doh: Remove UNITTEST macro definition
+  - examples/crawler.c: Use the curl license
+  - examples: Remove fopen.c and rtsp.c
+  - FAQ: Clarify Windows double quote usage
+  - fopen: Add Curl_fopen() for better overwriting of files (CVE-2022-32207)
+  - ftp: Restore protocol state after http proxy CONNECT
+  - ftp: When failing to do a secure GSSAPI login, fail hard
+  - GHA/hyper: Enable debug in the build
+  - gssapi: Improve handling of errors from gss_display_status
+  - gssapi: Initialize gss_buffer_desc strings
+  - headers API: Remove EXPERIMENTAL tag
+  - http2: Always debug print stream id in decimal with %%u
+  - http2: Reject overly many push-promise headers
+  - http: Restore header folding behaviour
+  - hyper: Use 'alt-used'
+  - krb5: Return error properly on decode errors (CVE-2022-32208)
+  - lib: Make more protocol specific struct fields #ifdefed
+  - libcurl-security.3: Add "Secrets in memory"
+  - libcurl-security.3: Document CRLF header injection
+  - libssh: Skip the fake-close when libssh does the right thing
+  - links: Update dead links to the curl-wiki
+  - log2changes: Do not indent empty lines
+  - macos9: Remove partial support
+  - Makefile.am: Fix portability issues
+  - Makefile.m32: Delete obsolete options, improve -On
+  - Makefile.m32: Delete two obsolete OpenSSL options
+  - Makefile.m32: Stop forcing XP target with ipv6 enabled
+  - max-time.d: Clarify max-time sets max transfer time
+  - mprintf: Ignore clang non-literal format string
+  - netrc: Check %%USERPROFILE%% as well on Windows
+  - netrc: Support quoted strings
+  - ngtcp2: Allow curl to send larger UDP datagrams
+  - ngtcp2: Correct use of ngtcp2 and nghttp3 signed integer types
+  - ngtcp2: Enable Linux GSO
+  - ngtcp2: Extend QUIC transport parameters buffer
+  - ngtcp2: Fix alert_read_func return value
+  - ngtcp2: Fix typo in preprocessor condition
+  - ngtcp2: Handle error from ngtcp2_conn_submit_crypto_data
+  - ngtcp2: Send appropriate connection close error code
+  - ngtcp2: Support boringssl crypto backend
+  - ngtcp2: Use helper funcs to simplify TLS handshake integration
+  - ntlm: Provide a fixed fake host name
+  - projects: Fix third-party SSL library build paths for Visual Studio
+  - quic: Add Curl_quic_idle
+  - quiche: Support ca-fallback
+  - rand: Stop detecting /dev/urandom in cross-builds
+  - remote-name.d: Mention --output-dir
+  - runtests.pl: Add the --repeat parameter to the --help output
+  - runtests: Fix skipping tests not done event-based
+  - runtests: Skip starting the ssh server if user name is lacking
+  - scripts/copyright.pl: fix the exclusion to not ignore man pages
+  - sectransp: Check for a function defined when __BLOCKS__ is undefined
+  - select: Return error from "lethal" poll/select errors
+  - server/sws: Support spaces in the HTTP request path
+  - speed-limit/time.d: Mention these affect transfers in either direction
+  - strcase: Some optimizations
+  - test 2081: Add a valid reply for the second request
+  - test 675: Add missing CR so the test passes when run through Privoxy
+  - test414: Add the '--resolve' keyword
+  - test681: Verify --no-remote-name
+  - tests 266, 116 and 1540: Add a small write delay
+  - tests/data/test1501: Kill ftp server after slow LIST response
+  - tests/getpart: Fix getpartattr to work with "data" and "data2"
+  - tests/server/sws.c: Change the HTTP writedelay unit to milliseconds
+  - test{440,441,493,977}: Add "HTTP proxy" keywords
+  - tool_getparam: Fix --parallel-max maximum value constraint
+  - tool_operate: Make sure --fail-with-body works with --retry
+  - transfer: Fix potential NULL pointer dereference
+  - transfer: Maintain --path-as-is after redirects
+  - transfer: Upload performance; avoid tiny send
+  - url: Free old conn better on reuse
+  - url: Remove redundant #ifdefs in allocate_conn()
+  - url: URL encode the path when extracted, if spaces were set
+  - urlapi: Make curl_url_set(url, CURLUPART_URL, NULL, 0) clear all parts
+  - urlapi: Support CURLU_URLENCODE for curl_url_get()
+  - urldata: Reduce size of a few struct fields
+  - urldata: Remove three unused booleans from struct UserDefined
+  - urldata: Store tcp_keepidle and tcp_keepintvl as ints
+  - version: Allow stricmp() for sorting the feature list
+  - vtls: Make curl_global_sslset thread-safe
+  - wolfssh.h: Removed
+  - wolfSSL: Correct the failf() message when a handle can't be made
+  - wolfSSL: Explicitly use compatibility layer
+  - x509asn1: Mark msnprintf return as unchecked
+- Disable flaky test 3026 for now
+
+* Sat May 21 2022 Paul Howarth <paul@city-fan.org> - 7.83.1-1.1.cf
+- Rebuild for updated EL-7 libpsl (GH#8834)
+
+* Wed May 11 2022 Paul Howarth <paul@city-fan.org> - 7.83.1-1.0.cf
+- Update to 7.83.1
+  - altsvc: Fix host name matching for trailing dots
+  - cirrus: Update to FreeBSD 12.3
+  - cirrus: Use pip for Python packages on FreeBSD
+  - conn: Fix typo 'connnection' → 'connection' in two function names
+  - cookies: Make bad_domain() not consider a trailing dot fine (CVE-2022-27779)
+  - curl: Free resource in error path
+  - curl: Guard against size_t wraparound in no-clobber code
+  - CURLOPT_DOH_URL.3: Mention the known bug
+  - CURLOPT_HSTS*FUNCTION.3: Document the involved structs as well
+  - CURLOPT_SSH_AUTH_TYPES.3: Fix the default
+  - data/test376: Set a proper name
+  - GHA/mbedtls: Enabled nghttp2 in the build
+  - gha: Build msh3
+  - gskit: Fixed bogus setsockopt calls
+  - gskit: Remove unused function set_callback
+  - hsts: Ignore trailing dots when comparing hosts' names (CVE-2022-30115)
+  - HTTP-COOKIES: Add missing CURLOPT_COOKIESESSION
+  - http: Move Curl_allow_auth_to_host()
+  - http_proxy/hyper: Handle closed connections
+  - hyper: Fix test 357
+  - Makefile: Fix "make ca-firefox"
+  - mbedtls: Bail out if rng init fails
+  - mbedtls: Fix compile when h2-enabled
+  - mbedtls: Fix some error messages
+  - misc: Use "autoreconf -fi" instead of buildconf
+  - msh3: Get msh3 version from MsH3Version
+  - msh3: Print boolean value as text representation
+  - msh3: Pass remote_port to MsH3ConnectionOpen
+  - ngtcp2: Add ca-fallback support for OpenSSL backend
+  - nss: Return error if seemingly stuck in a cert loop (CVE-2022-27781)
+  - openssl: Define HAVE_SSL_CTX_SET_EC_CURVES for libressl
+  - post_per_transfer: Remove the updated file name (CVE-2022-27778)
+  - sectransp: Bail out if SSLSetPeerDomainName fails
+  - tests/server: Declare variable 'reqlogfile' static
+  - tests: Fix markdown formatting in README
+  - test{898,974,976}: Add 'HTTP proxy' keywords
+  - tls: Check more TLS details for connection reuse (CVE-2022-27782)
+  - url: Check SSH config match on connection reuse (CVE-2022-27782)
+  - urlapi: Address (harmless) UndefinedBehavior sanitizer warning
+  - urlapi: Reject percent-decoding host name into separator bytes
+    (CVE-2022-27780)
+  - x509asn1: Make do_pubkey handle EC public keys
+
+* Wed Apr 27 2022 Paul Howarth <paul@city-fan.org> - 7.83.0-1.0.cf
+- Update to 7.83.0
+  - curl: Add %%header{name} experimental support in -w handling
+  - curl: Add %%{header_json} experimental support in -w handling
+  - curl: Add --no-clobber
+  - curl: Add --remove-on-error
+  - header api: Add curl_easy_header and curl_easy_nextheader
+  - msh3: Add support for QUIC and HTTP/3 using msh3
+  - appveyor: Add Cygwin build
+  - appveyor: Only add MSYS2 to PATH where required
+  - BearSSL: Add CURLOPT_SSL_CIPHER_LIST support
+  - BearSSL: Add CURLOPT_SSL_CTX_FUNCTION support
+  - BINDINGS.md: Add Hollywood binding
+  - CI: Do not use buildconf; instead, just use: autoreconf -fi
+  - CI: Install Python package impacket to run SMB test 1451
+  - configure.ac: Move -pthread CFLAGS setting back where it used to be
+  - configure: Bump the copyright year range in the generated output
+  - conncache: Include the zone id in the "bundle" hashkey (CVE-2022-27775)
+  - connecache: Remove duplicate connc->closure_handle check
+  - connect: Make Curl_getconnectinfo work with conn cache from share handle
+  - connect: Use TCP_KEEPALIVE only if TCP_KEEPIDLE is not defined
+  - cookie.d: Clarify when cookies are sent
+  - cookies: Improve error handling for reading cookiefile
+  - curl/system.h: Update ifdef condition for MCST-LCC compiler
+  - curl: Error out if -T and -d are used for the same URL
+  - curl: Error out when options need features not present in libcurl
+  - curl: Escape '?' in generated --libcurl code
+  - curl: Fix segmentation fault for empty output file names
+  - curl_easy_header: Fix typos in documentation
+  - CURLINFO_PRIMARY_PORT.3: Clarify which port this is
+  - CURLOPT*TLSAUTH.3: They only work with OpenSSL or GnuTLS
+  - CURLOPT_DISALLOW_USERNAME_IN_URL.3: Use uppercase URL
+  - CURLOPT_PREQUOTE.3: Only works for FTP file transfers, not dirs
+  - CURLOPT_PROGRESSFUNCTION.3: Fix typo in example
+  - CURLOPT_UNRESTRICTED_AUTH.3: Extended explanation
+  - CURLSHOPT_UNLOCKFUNC.3: Fix the callback prototype
+  - docs/HYPER.md: Updated to reflect current hyper build needs
+  - docs/opts: Mention Schannel client cert type is P12
+  - docs: Fix missing semicolon in example code
+  - docs: Lots of minor language polish
+  - English: Use American spelling consistently
+  - fail.d: Tweak the description
+  - firefox-db2pem.sh: Make the shell script safer
+  - ftp: Fix error message for partial file upload
+  - gen.pl: Change wording for mutexed options
+  - GHA: Add openssl3 jobs moved over from Zuul
+  - GHA: Build hyper with nightly rustc
+  - GHA: Move bearssl jobs over from Zuul
+  - GHA: Move the event-based test over from Zuul
+  - gtls: Fix build for disabled TLS-SRP
+  - http2: Handle DONE called for the paused stream
+  - http2: RST the stream if we stop it on our own will
+  - http: Avoid auth/cookie on redirects same host diff port (CVE-2022-27776)
+  - http: Close the stream (not connection) on time condition abort
+  - http: Reject header contents with nul bytes
+  - http: Return error on colon-less HTTP headers
+  - http: streamclose "already downloaded"
+  - hyper: Fix status_line() return code
+  - hyper: Fix tests 580 and 581 for hyper
+  - hyper: No h2c support
+  - infof: Consistent capitalization of warning messages
+  - ipv4/6.d: Clarify that they are about using IP addresses
+  - json.d: Fix typo (overriden → overridden)
+  - keepalive-time.d: It takes many probes to detect brokenness
+  - lib/warnless.[ch]: Only check for WIN32 and ignore _WIN32
+  - lib670: Avoid double check result
+  - lib: #ifdef on USE_HTTP2 better
+  - lib: Fix some misuse of curlx_convert_wchar_to_UTF8
+  - lib: Remove exclamation marks
+  - libssh2: Compare sha256 strings case sensitively
+  - libssh2: Make the md5 comparison fail if wrong length
+  - libssh: Fix build with old libssh versions
+  - libssh: Fix double close
+  - libssh: Improve fix for missing SSH_S_ stat macros
+  - libssh: Unstick SFTP transfers when done event-based
+  - macos: Set .plist version in autoconf
+  - mbedtls: Remove 'protocols' array from backend when ALPN is not used
+  - mbedtls: Remove server_fd from backend
+  - mk-ca-bundle.pl: Use stricter logic to process the certificates
+  - mk-ca-bundle.vbs: Delete this script in favor of mk-ca-bundle.pl
+  - mlc_config.json: Add file to ignore known troublesome URLs
+  - mqtt: Better handling of TCP disconnect mid-message
+  - ngtcp2: Add client certificate authentication for OpenSSL
+  - ngtcp2: Avoid busy loop in low CWND situation
+  - ngtcp2: Deal with sub-millisecond timeout
+  - ngtcp2: Disconnect the QUIC connection properly
+  - ngtcp2: Enlarge H3_SEND_SIZE
+  - ngtcp2: Fix HTTP/3 upload stall and avoid busy loop
+  - ngtcp2: Fix memory leak
+  - ngtcp2: Fix QUIC_IDLE_TIMEOUT
+  - ngtcp2: Make curl 1ms faster
+  - ngtcp2: Remove remote_addr, which is not used in a meaningful way
+  - ngtcp2: Update to work after recent ngtcp2 updates
+  - ngtcp2: Use token when detecting :status header field
+  - nonblock: Restore setsockopt method to curlx_nonblock
+  - openssl: Check SSL_get_peer_cert_chain return value
+  - openssl: Enable CURLOPT_SSL_EC_CURVES with BoringSSL
+  - openssl: Fix CN check error code
+  - options: Remove mistaken space before paren in prototype
+  - perl: Removed a double semicolon at end of line
+  - pop3/smtp: return *WEIRD_SERVER_REPLY when not understood
+  - projects/README: Converted to markdown
+  - projects: Update VC version names for VS2017, VS2022
+  - rtsp: Don't let CSeq error override earlier errors
+  - runtests: Add 'bearssl' as testable feature
+  - runtests: Make 'oldlibssh' be before 0.9.4
+  - schannel: Remove dead code that will never run
+  - scripts/copyright.pl: Ignore the new mlc_config.json file
+  - scripts: Move three scripts from lib/ to scripts/
+  - test1135: Sync with recent API updates
+  - test1459: Disable for oldlibssh
+  - test375: Fix line endings on Windows
+  - test386: Fix an incorrect test markup tag
+  - test718: Edited slightly to return better HTTP
+  - tests/server/util.h: Align WIN32 condition with util.c
+  - tests: Refactor server/socksd.c to support --unix-socket
+  - timediff.[ch]: Add curlx helper functions for timeval conversions
+  - tls: Make mbedtls and NSS check for h2, not nghttp2
+  - tool and tests: Force flush of all buffers at end of program
+  - tool_cb_hdr: Turn the Location: into a terminal hyperlink
+  - tool_getparam: Error out on missing -K file
+  - tool_listhelp.c: Uppercase URL
+  - tool_operate: Fix a scan-build warning
+  - tool_paramhlp: Use feof(3) to identify EOF correctly when using fread(3)
+  - transfer: Redirects to other protocols or ports clear auth (CVE-2022-27774)
+  - unit1620: Call global_init before calling Curl_open
+  - url: Check sasl additional parameters for connection reuse (CVE-2022-22576)
+  - vtls: Provide a unified ALPN-disagree string for all backends
+  - vtls: Use a backend standard message for "ALPN: offers %%s"
+  - vtls: Use a generic "ALPN, server accepted" message
+  - winbuild/README.md: Fix up dead link
+  - winbuild: Add a Visual Studio example to the README
+  - wolfssl: Fix compiler error without IPv6
+
+* Tue Mar 15 2022 Paul Howarth <paul@city-fan.org> - 7.82.0-2.0.cf
+- openssl: Fix incorrect CURLE_OUT_OF_MEMORY error on CN check failure
+
+* Sat Mar  5 2022 Paul Howarth <paul@city-fan.org> - 7.82.0-1.0.cf
+- Update to 7.82.0
+  - curl: Add --json
+  - mesalink: Remove support
+  - appveyor: Update images from VS 2019 to 2022
+  - appveyor: Use VS 2017 image for the autotools builds
+  - azure-pipelines: Add a build on Windows with libssh
+  - bearssl: Fix connect error on expired cert and no verify
+  - bearssl: Fix EXC_BAD_ACCESS on incomplete CA cert
+  - bearssl: Fix session resumption (session id)
+  - build: Enable -Warith-conversion
+  - build: Fix -Wenum-conversion handling
+  - build: Fix ngtcp2 crypto library detection
+  - checkprefix: Remove strlen calls
+  - checksrc: Fix typo in comment
+  - CI: Move 'distcheck' job from Zuul to Azure pipelines
+  - CI: Move scan-build job from Zuul to Azure Pipelines
+  - CI: Move the NSS job from Zuul to GHA
+  - ci: Move the OpenSSL + c-ares job from Zuul to Circle CI
+  - CI: Move the rustls CI job to GHA from Zuul
+  - CI: Move two jobs from Zuul to Circle CI
+  - CI: Test building wolfssl with --enable-opensslextra
+  - CI: workflows/wolfssl: Install impacket
+  - circleci: Add a job using libssh
+  - cirlceci: Also run a c-ares job on arm with debug enabled
+  - cmake: Fix iOS CMake project generation error
+  - cmdline-opts/gen.pl: Fix option matching to improve references
+  - config.d: Clarify _curlrc filename is still valid on Windows
+  - configure.ac: Use user-specified gssapi dir when using pkg-config
+  - configure: Change output for cross-compiled alt-svc support
+  - configure: Fix '--enable-code-coverage' typo
+  - configure: Remove support for "embedded ares"
+  - configure: Requires --with-nss-deprecated to build with NSS
+  - configure: Set CURL_LIBRARY_PATH for nghttp2
+  - configure: Support specification of a nghttp2 library path
+  - configure: Use correct CFLAGS for threaded resolver with xlC on AIX
+  - curl tool: Erase some more sensitive command line arguments
+  - curl-functions.m4: Fix LIBRARY_PATH adjustment to avoid eval
+  - curl-functions.m4: Revert DYLD_LIBRARY_PATH tricks in CURL_RUN_IFELSE
+  - curl-openssl: Fix SRP check for OpenSSL 3.0
+  - curl-openssl: Remove the OpenSSL headers and library versions check
+  - curl.h: Fix typo
+  - curl: Remove "separators" (when using globbed URLs)
+  - curl_getdate.3: Remove pointless .PP line
+  - curl_multi_socket.3: Remove callback and typical usage descriptions
+  - curl_url_set.3: Mention when CURLU_ALLOW_SPACE was added
+  - CURLMOPT_TIMERFUNCTION/DATA.3: Fix the examples
+  - CURLOPT_PROGRESSFUNCTION.3: Fix example struct assignment
+  - CURLOPT_RESOLVE.3: Change example port to 443
+  - CURLOPT_XFERINFOFUNCTION.3: Fix example struct assignment
+  - CURLOPT_XFERINFOFUNCTION.3: Fix typo in example
+  - CURLSHOPT_LOCKFUNC.3: Fix typo "relased" ⇒ "released"
+  - DES: Fix compile break for OpenSSL without DES
+  - docs/cmdline-opts: Add "mutexed" options for more http versions
+  - docs/DEPRECATE: Remove NPN support in August 2022
+  - docs: Capitalize the name 'Netscape'
+  - docs: Document HTTP/2 not insisting on TLS 1.2
+  - docs: Fix mandoc -T lint formatting complaints
+  - docs: Update IETF links to use datatracker
+  - examples/curlx: Support building with OpenSSL 1.1.0+
+  - examples/multi-app.c: Call curl_multi_remove_handle as well
+  - formdata: Avoid size_t → long typecast overflows
+  - ftp: Provide error message for control bytes in path
+  - gen.pl: Terminate "example" sections better
+  - gha: Add a macOS CI job with libssh
+  - gskit: Convert to using Curl_poll
+  - gskit: Fix errors from Curl_strerror refactor
+  - gskit: Fix initialization of Curl_ssl_gskit struct
+  - h2/h3: Allow CURLOPT_HTTPHEADER change ":scheme"
+  - hostcheck: Fixed to not touch used input strings
+  - hostcheck: Reduce strlen calls on chained certificates
+  - hostip: Avoid unused parameter error in Curl_resolv_check
+  - http2: Move two infof calls to debug-h2-only
+  - http: Make Curl_compareheader() take string length arguments too
+  - if2ip: Make Curl_ipv6_scope a blank macro when IPv6-disabled
+  - KNOWN_BUGS: Fix typo "libpsl"
+  - ldap: Return CURLE_URL_MALFORMAT for bad URL
+  - lib: Remove support for CURL_DOES_CONVERSIONS
+  - libssh2: Don't typecast socket to int for libssh2_session_handshake
+  - libssh: Fix include files and defines use for Windows builds
+  - Makefile.am: Generate VS 2022 projects
+  - maketgz: Return error if 'make dist' fails
+  - mbedtls: Enable use of mbedtls without CRL support
+  - mbedtls: Enable use of mbedtls without filesystem functions support
+  - mbedtls: Fix CURLOPT_SSLCERT_BLOB (again)
+  - mbedtls: Fix ssl_init error with mbedTLS 3.1.0+
+  - mbedtls: Remove #include <mbedtls/certs.h>
+  - mbedtls: Return CURLcode result instead of a mbedtls error code
+  - md5: Check md5_init_func return value
+  - mime: Use a define instead of the magic number 24
+  - misc: Allow curl to build with wolfssl --enable-opensslextra
+  - misc: Remove BeOS code and references
+  - misc: Remove the final watcom references
+  - misc: Remove unused data when IPv6 is not supported
+  - mqtt: Free 'sendleftovers' in disconnect
+  - mqtt: Free any send leftover data when done
+  - multi: Allow user callbacks to call curl_multi_assign
+  - multi: Grammar fix in comment
+  - multi: Remember connection_id before returning connection to pool
+  - multi: Set in_callback for multi interface callbacks
+  - netware: Remove support
+  - next.d: Remove .fi/.nf as they are handled by gen.pl
+  - ngtcp2: Adapt to changed end of headers callback proto
+  - ngtcp2: Fix declaration of ‘result’ shadows a previous local
+  - ngtcp2: Reset dynbuf when it is fully drained
+  - nss: Handshake callback during shutdown has no conn->bundle
+  - ntlm: Remove unused feature defines
+  - openldap: Fix compiler warning when built without SSL support
+  - openldap: Implement SASL authentication
+  - openldap: Pass string length arguments to client_write()
+  - openssl.h: Avoid including OpenSSL headers here
+  - openssl: Check if sessionid flag is enabled before retrieving session
+  - openssl: Check SSL_get_ex_data to prevent potential NULL dereference
+  - openssl: Check the return value of BIO_new_mem_buf()
+  - openssl: Fix 'ctx_option_t' for OpenSSL v3+
+  - openssl: Fix build for version < 1.1.0
+  - openssl: Return error if TLS 1.3 is requested when not supported
+  - os400: Add function wrapper for system command
+  - os400: Add link to QADRT devkit to README.OS400
+  - os400: Default build to target current release
+  - OS400: Fix typos in rpg include file
+  - projects: Add support for Visual Studio 17 (2022)
+  - projects: Fix Visual Studio wolfSSL configurations
+  - projects: Remove support for MSVC before VC10 (Visual Studio 2010)
+  - quiche: After leaving h3_recving state, poll again
+  - quiche: Change qlog file extension to '.sqlog'
+  - quiche: Fix upload for bigger content-length
+  - quiche: Handle stream reset
+  - quiche: Remove two leftover debug infof() outputs
+  - quiche: Verify the server cert on connect
+  - quiche: When *recv_body() returns data, drain it before polling again
+  - README.md: Fix links
+  - remote-header-name.d: Clarify
+  - runtests.pl: Disable debuginfod
+  - runtests.pl: Properly print the test if it contains binary zeros
+  - runtests.pl: Support the nonewline attribute for the data part
+  - runtests.pl: Tolerate test directories without Makefile.inc
+  - runtests: Allow client/file to specify multiple directories
+  - runtests: Make 'rustls' a testable feature
+  - runtests: Make 'wolfssl' a testable feature
+  - runtests: Set 'oldlibssh' for libssh versions before 0.9.5
+  - rustls: Add CURLOPT_CAINFO_BLOB support
+  - schannel: Move the algIds array out of schannel.h
+  - scripts/cijobs.pl: Output data about all current CI jobs
+  - scripts/completion.pl: Improve zsh completion
+  - scripts/copyright.pl: Support many provided file names on the cmdline
+  - scripts/delta: Check the file delta for current branch
+  - sectransp: Mark a 3DES cipher as weak
+  - setopt: Do bounds-check before strdup
+  - setopt: Fix the TLSAUTH #ifdefs for proxy-disabled builds
+  - sha256: Fix minimum OpenSSL version
+  - smb: Pass socket for writing and reading data instead of FIRSTSOCKET
+  - ssl: Reduce allocated space for ssl backend when FTP is disabled
+  - test3021: Disable all msys2 path transformation
+  - test374: GIF data without newline at the end
+  - tests/disable-scan.pl: Properly detect multiple symbols per line
+  - tests/unit/Makefile.am: Add NSS_LIBS to build with NSS fine
+  - tool_findfile: Check ~/.config/curlrc too
+  - tool_getparam: DNS options that need c-ares now fail without it
+  - TPF: Drop support
+  - unit1610: Init SSL library before calling SHA256 functions
+  - url: Exclude zonefrom_url when no ipv6 is available
+  - url: Given a user in the URL, find pwd for that user in netrc
+  - url: Keep trailing dot in host name
+  - url: Make Curl_disconnect return void
+  - urlapi: Handle "redirects" smarter
+  - urldata: CONN_IS_PROXIED replaces bits.proxy when proxy can be disabled
+  - urldata: Remove conn->bits.user_passwd
+  - version_win32: Fix warning for 'CURL_WINDOWS_APP'
+  - vtls: Fix socket check conditions
+  - vtls: Pass on the right SNI name
+  - vxworks: Drop support
+  - winbuild: Add parameter WITH_SSH
+  - wolfssl: Return CURLE_AGAIN for the SSL_ERROR_NONE case
+  - wolfssl: When SSL_read() returns zero, check the error
+  - write-out.d: Fix num_headers formatting
+  - x509asn1: Toggle off functions not needed for different tls backends
+- Drop hacks for running tests with python3
+- Drop support for running tests with python2 (support dropped upstream)
+- Add --with-nss-deprecated flag to configure with NSS support
+- Add fix for failing test1459 on EL-8 with libssh 0.9.4 (GH#8548)
+
+* Thu Feb 24 2022 Paul Howarth <paul@city-fan.org> - 7.81.0-4.0.cf
+- Enable IDN support also in libcurl-minimal
+
+* Fri Feb 11 2022 Paul Howarth <paul@city-fan.org> - 7.81.0-3.0.cf
+- Suggest libcurl-minimal in curl-minimal
+
+* Fri Jan 21 2022 Paul Howarth <paul@city-fan.org> - 7.81.0-2.0.cf
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_36_Mass_Rebuild
+
+* Wed Jan  5 2022 Paul Howarth <paul@city-fan.org> - 7.81.0-1.0.cf
+- Update to 7.81.0
+  - mime: Use percent-escaping for multipart form field and file names
+  - asyn-ares: ares_getaddrinfo needs no happy eyeballs timer
+  - azure: Make the "w/o HTTP/SMTP/IMAP" build disable SSL proper
+  - BINDINGS: Add cURL client for PostgreSQL
+  - BINDINGS: Add one from Everything curl and update a link
+  - checksrc: Detect more kinds of NULL comparisons we avoid
+  - CI: Build examples for additional code verification
+  - CI: Bump job to use mbedtls 3.1.0
+  - cmake: Don't set _USRDLL on a static Windows build
+  - cmake: Prevent dev warning due to mismatched arg
+  - cmake: Private identifiers use CURL_ instead of CMAKE_ prefix
+  - config.d: Update documentation to match the path search
+  - configure: Add -lm to configure for rustls build
+  - configure: Better diagnostics if hyper is built wrong
+  - configure: Don't enable TLS when --without-* flags are used
+  - configure: Fix runtime-lib detection on macOS
+  - curl.1: Require "see also" for every documented option
+  - curl: Improve error message for --head with -J
+  - curl_easy_cleanup.3: Remove from multi handle first
+  - curl_easy_escape.3: Call curl_easy_cleanup in example
+  - curl_easy_unescape.3: Call curl_easy_cleanup in example
+  - curl_multi_init.3: Fix EXAMPLE formatting
+  - curl_multi_perform/socket_action.3: Clarify what errors mean
+  - curl_share_setopt.3: Split out options into their own manpages
+  - CURLOPT_STDERR.3: Does not work with libcurl as a win32 DLL
+  - digest: Compute user:realm:pass digest w/o userhash
+  - docs/checksrc: Add documentation for STRERROR
+  - docs/cmdline-opts: Do not say "protocols: all"
+  - docs/examples: Work around broken -Wno-pedantic-ms-format
+  - docs/HTTP3: Describe how to setup a h3 reverse-proxy for testing
+  - docs/INSTALL.md: Typo fix: added missing "get" verb
+  - docs/URL-SYNTAX.md: Space is not fine in a given URL
+  - docs: Add known bugs list to HTTP3.md
+  - docs: Address proselint nits
+  - docs: Consistent manpage SYNOPSIS
+  - docs: Fix dead links, remove ECH.md
+  - docs: Fix typo in OpenSSL 3 build instructions
+  - docs: Update the Reducing Size section
+  - example/progressfunc: Remove code for old libcurls
+  - examples/multi-single.c: Remove WAITMS()
+  - FAQ: Typo fix: "yout" → "your"
+  - ftp: Disable warning 4706 in MSVC
+  - gen.pl: Improve example output format
+  - github workflow: Add wolfssl (removed from zuul)
+  - github/workflows: Add mbedtls and mbedtls-clang (removed from zuul)
+  - gtls: Check return code for gnutls_alpn_set_protocols
+  - hash: lazy-alloc the table in Curl_hash_add()
+  - http2: set_transfer_url() return early on OOM
+  - HTTP3: Update quiche build instructions
+  - http: Enable haproxy support for hyper backend
+  - http: Fix CURLOPT_HTTP200ALIASES
+  - http_proxy: Don't close the socket (too early)
+  - insecure.d: Detail its use for SFTP and SCP as well
+  - insecure.d: Expand and clarify
+  - libcurl-multi.3: "SOCKS proxy handshakes" are not blocking
+  - libcurl-security.3: Mention address and URL mitigations
+  - libssh2: Fix error message for sha256 mismatch
+  - libtest: Avoid "assignment within conditional expression"
+  - lift: ignore is a deprecated config option, use ignoreRules
+  - linkcheck.yml: Add CI job that checks markdown links
+  - m4/curl-compilers: Tell clang -Wno-pointer-bool-conversion
+  - Makefile.m32: Rename -winssl option to -schannel and tidy up
+  - mbedTLS: Add support for CURLOPT_CAINFO_BLOB
+  - mbedtls: Fix CURLOPT_SSLCERT_BLOB
+  - mbedtls: Fix private member designations for v3.1.0
+  - misc: Remove unused doh flags when CURL_DISABLE_DOH is defined
+  - misc: s/e-mail/email
+  - multi: Clean up the socket hash when destroying it
+  - multi: Handle errors returned from socket/timer callbacks
+  - multi: Shut down CONNECT in Curl_detach_connnection
+  - netrc.d: Edit the .netrc example to look nicer
+  - ngtcp2: Verify the server cert on connect (quictls)
+  - ngtcp2: Verify the server certificate for the gnutls case
+  - nss: set_cipher: don't clobber the cipher list
+  - openldap: Implement STARTTLS
+  - openldap: Process search query response messages one by one
+  - openldap: Several minor improvements
+  - openldap: Simplify ldif generation code
+  - openssl: Check the return value of BIO_new()
+  - openssl: define HAVE_OPENSSL_VERSION for OpenSSL 1.1.0+
+  - openssl: Remove 'RSA_METHOD_FLAG_NO_CHECK' handling if unavailable
+  - openssl: Remove usage of deprecated 'SSL_get_peer_certificate'
+  - openssl: Use non-deprecated API to read key parameters
+  - page-footer: Add a mention of how to report bugs to the man page
+  - page-footer: Document more environment variables
+  - request.d: Refer to 'method' rather than 'command'
+  - retry-all-errors.d: Make the example complete
+  - runtests: Make the SSH library a testable feature
+  - rustls: Read of zero bytes might be okay
+  - rustls: Remove comment about checking handshaking
+  - rustls: Remove incorrect EOF check
+  - sha256/md5: Return errors when init fails
+  - socks5: Use appropriate ATYP for numerical IP address host names
+  - test1156: Enable for hyper
+  - test1156: Fix up the stdout check for Windows
+  - test1525: Tweaked for hyper
+  - test1526: Enable for hyper
+  - test1527: Enable for hyper
+  - test1528: Enable for hyper
+  - test1554: Adjust for hyper
+  - test1556: Adjust for hyper
+  - test302[12]: Run only with the libssh2 backend
+  - test661: Enable for hyper
+  - tests/CI.md: Add more information on CI environments
+  - tests/data/test302[12]: Fix MSYS2 path conversion of hostpubsha256
+  - tftp: Mark protocol as not possible to do over CONNECT
+  - tool_findfile: Updated search for a file in the homedir
+  - tool_operate: Only set SSH related libcurl options for SSH URLs
+  - tool_operate: Warn if too many output arguments were found
+  - url.c: Fix the SIGPIPE comment for Curl_close
+  - url: Check ssl_config when re-use proxy connection
+  - url: Reduce ssl backend count for CURL_DISABLE_PROXY builds
+  - urlapi: Accept port number zero
+  - urlapi: If possible, shorten given numerical IPv6 addresses
+  - urlapi: Provide more detailed return codes
+  - urlapi: Reject short file URLs
+  - version_win32: Check build number and platform id
+  - vtls/rustls: Adapt to the updated rustls_version proto
+  - writeout: Fix %%{http_version} for HTTP/3
+  - x509asn1: Return early on errors
+  - zuul.d: Update rustls-ffi to version 0.8.2
+  - zuul: Fix quiche build pointing to wrong Cargo
+
+* Sun Nov 14 2021 Paul Howarth <paul@city-fan.org> - 7.80.0-2.0.cf
+- sshserver.pl (used in test suite) now requires the Digest::SHA perl module
+
+* Wed Nov 10 2021 Paul Howarth <paul@city-fan.org> - 7.80.0-1.0.cf
+- Update to 7.80.0
+  - CURLOPT_MAXLIFETIME_CONN: Maximum allowed lifetime for conn reuse
+  - CURLOPT_PREREQFUNCTION: Add new callback
+  - libssh2: Add SHA256 fingerprint support
+  - urlapi: Add curl_url_strerror()
+  - urlapi: Support UNC paths in file: URLs on Windows
+  - wolfssl: Allow setting of groups/curves
+  - .github: Retry macos "brew install" command on failure
+  - aws-sigv4: Make signature work when post data is binary
+  - BINDINGS: URL updates
+  - build: Remove checks for WinSock 1
+  - c-hyper: Don't abort CONNECT responses early when auth-in-progress
+  - c-hyper: Make Curl_http propagate errors better
+  - c-hyper: Make CURLOPT_SUPPRESS_CONNECT_HEADERS work
+  - c-hyper: Make test 217 run
+  - c-hyper: Use hyper_request_set_uri_parts to make h2 better
+  - checksrc: Ignore preprocessor lines
+  - CI/makefiles: Introduce dedicated test target
+  - ci: Update Lift config to match requirements of curl build
+  - cirrus: Remove FreeBSD 11.4 from the matrix
+  - cirrus: Switch to openldap24-client
+  - cleanup: constify unmodified static structs
+  - cmake: Add CURL_ENABLE_SSL option
+  - cmake: Fix error getting LOCATION property on non-imported target
+  - cmake: Restore support for SecureTransport on iOS
+  - cmake: With OpenSSL, define OPENSSL_SUPPRESS_DEPRECATED
+  - cmdline-opts: Made the 'Added:' field mandatory
+  - configure.ac: Replace krb5-config with pkg-config
+  - configure: When hyper is selected, deselect nghttp2
+  - connect: Use sysaddr_un from sys/un.h or custom-defined for Windows
+  - curl-confopts.m4: Remove --enable/disable-hidden-symbols
+  - curl-openssl.m4: Modify library order for openssl linking
+  - curl-openssl: Pass argument to sed single-quoted
+  - curl.1: Remove mentions of really old version changes
+  - curl: Actually append "-" to --range without number only
+  - curl: Correct grammar in generated libcurl code
+  - curl: Print help descriptions in an aligned right column
+  - curl_gssapi: Fix link error on macOS Monterey
+  - curl_multi_socket_action.3: Add a "RETURN VALUE" section
+  - curl_ntlm_core: Use OpenSSL only if DES is available
+  - Curl_updateconninfo: Store addresses for QUIC connections too
+  - CURLOPT_ALTSVC_CTRL.3: Mention conn reuse is preferred
+  - CURLOPT_HSTSWRITEFUNCTION.3: Using CURLOPT_HSTS_CTRL is required
+  - CURLOPT_HTTPHEADER.3: Add description for specific headers
+  - docs/HTTP3: Improve build instructions
+  - docs/Makefile.am: Repair 'make html'
+  - docs: Fix typo in CURLOPT_TRAILERFUNCTION example
+  - docs: Provide "RETURN VALUE" section for more func manpages
+  - docs: Reduce use of "very"
+  - doh: Remove experimental code for DoH with GET
+  - examples/htmltidy: Correct wrong printf() use
+  - examples/imap-append: Fix end-of-data check
+  - ftp: Make the MKD retry to retry once per directory
+  - gen.pl: Insert the current date and version in generated man page
+  - gen.pl: Replace leading single quotes with \(aq
+  - http2: Make getsock not wait for write if there's no remote window
+  - HTTP3: Fix the HTTP/3 Explained book link
+  - http: Fix Basic auth with empty name field in URL
+  - http: Reject HTTP response codes < 100
+  - http: Remove assert that breaks hyper
+  - http: Set content length earlier
+  - http_proxy: Make hyper CONNECT() return the correct error code
+  - http_proxy: Multiple CONNECT with hyper done better
+  - hyper: Disable test 1294 since hyper doesn't allow such crazy headers
+  - hyper: Does not support disabling CURLOPT_HTTP_TRANSFER_DECODING
+  - hyper: Pass the CONNECT line to the debug callback
+  - imap: Display quota information
+  - INSTALL: Update symbol hiding option
+  - lib/mk-ca-bundle.pl: Skip certs passed Not Valid After date
+  - lib: Avoid fallthrough cases in switch statements
+  - libcurl.rc: Switch out the copyright symbol for plain ASCII
+  - libssh2: Get the version at runtime if possible
+  - limit-rate.d: This is average over several seconds
+  - llist: Remove redundant code, branch will not be executed
+  - Makefile.m32: Fix to not require OpenSSL with -libssh2 or -rtmp options
+  - maketgz: Redirect updatemanpages.pl output to /dev/null
+  - man pages: Require all to use the same section header order
+  - manpage: Adjust the asterisk in some SYNOPSIS sections
+  - md5: Fix compilation with OpenSSL 3.0 API
+  - misc: Fix a few issues on MidnightBSD
+  - misc: Fix typos in docs and comments
+  - ngtcp2: Advertise h3 as well as h3-29
+  - ngtcp2: Compile with the latest nghttp3
+  - ngtcp2: Specify the missing required callback functions
+  - ngtcp2: Use latest QUIC TLS RFC9001
+  - NTLM: Use DES_set_key_unchecked with OpenSSL
+  - openssl: If verifypeer is not requested, skip the CA loading
+  - openssl: With OpenSSL 1.1.0+ a failed RAND_status means goaway
+  - Revert "src/tool_filetime: Disable -Wformat on mingw for this file"
+  - sasl: Binary messages
+  - schannel: Fix memory leak due to failed SSL connection
+  - scripts/delta: Count command line options in the new file
+  - sendf: Accept zero-length data in Curl_client_write()
+  - sha256: Use high-level EVP interface for OpenSSL
+  - smooth-gtk-thread.c: Enhance the mutex lock use
+  - sws: Fix memory leak on exit
+  - test1160: Edited to work with hyper
+  - test1173: Make manpage-syntax.pl spot \n errors in examples
+  - test1185: Verify checksrc
+  - test1266/1267: Disabled on hyper: no HTTP/0.9 support
+  - test1287: Make work on hyper
+  - test207: Accept a different error code for hyper
+  - test262: Don't attempt with hyper
+  - test552: Updated to work with hyper
+  - test559: Add 'HTTP' in keywords
+  - tests/smbserver.py: Fix compatibility with impacket 0.9.23+
+  - tests: Add Schannel-specific tests and disable unsupported ones
+  - tests: Disable test 2043
+  - tests: Kill some test servers afterwards to avoid locked logfiles
+  - tests: Use python3 in test 1451
+  - tls: Remove newline from three infof() calls
+  - tool_cb_prg: Make resumed upload progress bar show better
+  - tool_listhelp: Easier generated with gen.pl
+  - tool_main: Fix typo in comment
+  - tool_operate: A failed etag save now only fails that transfer
+  - URL-SYNTAX: Add IMAP UID SEARCH example
+  - url: Check the return value of curl_url()
+  - url: Set "k->size" -1 at start of request
+  - urlapi: Skip a strlen(), pass in zero
+  - urlapi: URL decode percent-encoded host names
+  - version_win32: Use actual version instead of manifested version
+  - vtls: Fix a memory leak if an SSL session cannot be added to the cache
+  - wolfssl: Use for SHA256, MD4, MD5, and setting DES odd parity
+  - zuul: Pin the quiche build to use an older cmake-rs
+- Add workaround for GSSAPI detection in Fedora 19 and Fedora 20
+
+* Wed Oct 27 2021 Paul Howarth <paul@city-fan.org> - 7.79.1-3.0.cf
+- Re-enable HSTS in libcurl-minimal as a security feature (#2005874)
+
+* Tue Oct  5 2021 Paul Howarth <paul@city-fan.org> - 7.79.1-2.0.cf
+- Disable more protocols and features in libcurl-minimal (#2005874)
+- Run upstream tests for both curl-minimal and curl-full
+- Explicitly disable zstd while configuring curl
+- Don't bother looking for Kerberos in /usr/kerberos anymore
+
+* Wed Sep 22 2021 Paul Howarth <paul@city-fan.org> - 7.79.1-1.0.cf
+- Update to 7.79.1
+  - Curl_http2_setup: Don't change connection data on repeat invokes
+  - curl_multi_fdset: Make FD_SET() not operate on sockets out of range
+  - dist: Provide lib/.checksrc in the tarball
+  - FAQ: Add GOPHERS + curl works on data, not files
+  - hsts: CURLSTS_FAIL from hsts read callback should fail transfer
+  - hsts: Handle unlimited expiry
+  - http: Fix the broken >3 digit response code detection
+  - strerror: Use sys_errlist instead of strerror on Windows
+  - test1184: Disable
+  - tests/sshserver.pl: Make it work with openssh-8.7p1
+
+* Thu Sep 16 2021 Paul Howarth <paul@city-fan.org> - 7.79.0-4.0.cf
+- Fix regression in http2 implementation introduced in the last release
+- Make SCP/SFTP tests work with openssh-8.7p1
+
+* Wed Sep 15 2021 Paul Howarth <paul@city-fan.org> - 7.79.0-1.0.cf
+- Update to 7.79.0
+  - bearssl: Support CURLOPT_CAINFO_BLOB
+  - http: Consider cookies over localhost to be secure
+  - secure transport: Support CURLINFO_CERTINFO
+  - CVE-2021-22945: Clear the leftovers pointer when sending succeeds
+  - CVE-2021-22946: Do not ignore --ssl-reqd
+  - CVE-2021-22947: Reject STARTTLS server response pipelining
+  - ares: Use ares_getaddrinfo()
+  - asyn-ares.c: Move all version number checks to the top
+  - auth: Do not append zero-terminator to authorisation id in kerberos
+  - auth: Properly handle byte order in kerberos security message
+  - auth: Use sasl authzid option in kerberos
+  - auth: We do not support a security layer after kerberos authentication
+  - BINDINGS.md: Update links to use https where available
+  - build: Fix compiler warnings
+  - c-hyper: Deal with Expect: 100-continue combined with POSTFIELDS
+  - c-hyper: Fix header value passed to debug callback
+  - c-hyper: Handle HTTP/1.1 ⇒ HTTP/1.0 downgrade on reused connection
+  - c-hyper: Initial step for 100-continue support
+  - c-hyper: Initial support for "dumping" 1xx HTTP responses
+  - c-hyper: Remove the hyper_executor_poll() loop from Curl_http
+  - CI/cirrus: Reduce compile time with increased parallelism
+  - CI: Use GitHub Container Registry instead of Docker Hub
+  - cirrus: Add FreeBSD 13.0 job and disable sanitizer build
+  - cmake: Avoid poll() on macOS
+  - cmake: Sync CURL_DISABLE options
+  - codeql: Fix error "Resource not accessible by integration"
+  - compressed.d: It's a request, not an order
+  - config.d: Escape the backslash properly
+  - config.d: Note that curlrc is used even when --config
+  - config: Get rid of the unused HAVE_SIG_ATOMIC_T et. al.
+  - configure.ac: Revert bad nghttp2 library detection improvements
+  - configure: Error out if both ngtcp2 and quiche are specified
+  - configure: Make --disable-hsts work
+  - configure: Set classic mingw minimum OS version to XP
+  - configure: Tweak nghttp2 library name fix
+  - connect: Get local port + ip also when reusing connections
+  - connect: Remove superfluous conditional
+  - curl-openssl.m4: Check lib64 for the pkg-config file
+  - curl-openssl.m4: Show correct output for OpenSSL v3
+  - curl.1: Mention "global" flags
+  - curl.1: Provide examples for each option
+  - curl: Add warning for ignored data after quoted form parameter
+  - curl: Add warning for incompatible parameters usage
+  - curl: Better error message when -O fails to get a good name
+  - curl: Stop retry if Retry-After: is longer than allowed
+  - curl_easy_setopt.3: Improve the string copy wording
+  - Curl_hsts_loadcb: Don't attempt to load if hsts wasn't inited
+  - curl_setup.h: Sync values for HTTP_ONLY
+  - curl_url_get.3: Clarify about path and query
+  - CURLMOPT_TIMERFUNCTION.3: Remove misplaced "time"
+  - CURLOPT_DOH_URL.3: CURLOPT_OPENSOCKETFUNCTION is not inherited
+  - CURLOPT_SSL_CTX_*.3: Tidy up the example
+  - CURLOPT_UNIX_SOCKET_PATH.3: Remove nginx reference, add see also
+  - docs/MQTT: Update state of username/password support
+  - docs: Remove experimental mentions from HSTS and MQTT
+  - docs: The security list is reached at security at curl.se now
+  - easy: Use a custom implementation of wcsdup on Windows
+  - examples/*hiperfifo.c: Fix calloc arguments to match function proto
+  - examples/cookie_interface: Avoid printfing time_t directly
+  - examples/cookie_interface: Fix scan-build printf warning
+  - examples/ephiperfifo.c: Simplify signal handler
+  - FAQ: Add two dev related questions
+  - getparameter: Fix the --local-port number parser
+  - happy-eyeballs-timeout-ms.d: Polish the wording
+  - hostip: Make Curl_ipv6works function independent of getaddrinfo
+  - http2: Curl_http2_setup needs to init stream data in all invokes
+  - http2: Revert a change that broke upgrade to h2c
+  - http2: Revert call the handle-closed function correctly on closed stream
+  - http: Disallow >3-digit response codes
+  - http: Ignore content-length if any transfer-encoding is used
+  - http_proxy: Clear 'sending' when the outgoing request is sent
+  - http_proxy: Fix the User-Agent inclusion in CONNECT
+  - http_proxy: Fix user-agent and custom headers for CONNECT with hyper
+  - http_proxy: Only wait for writeable socket while sending request
+  - INTERNALS: Bump c-ares requirement to 1.16.0
+  - INTERNALS: c-ares has a new home: c-ares.org
+  - lib: Don't use strerror()
+  - libcurl-errors.3: Clarify two CURLUcode errors
+  - limit-rate.d: Clarify base unit
+  - mailing lists: Move from cool.haxx.se to lists.haxx.se
+  - mbedtls: Avoid using a large buffer on the stack
+  - mbedTLS: Initial 3.0.0 support
+  - mbedtls_threadlock: Fix unused variable warning
+  - mksymbolsmanpage.pl: Fix showing symbol's last used version
+  - mksymbolsmanpage.pl: Match symbols case insensitively
+  - multi: Fix compiler warning with 'CURL_DISABLE_WAKEUP'
+  - ngtcp2: Compile with the latest ngtcp2 and nghttp3
+  - ngtcp2: Fix build with ngtcp2 and nghttp3
+  - ngtcp2: Remove the acked_crypto_offset struct field init
+  - ngtcp2: Replace deprecated functions with nghttp3_conn_shutdown_stream_read
+  - ngtcp2: Reset the outstanding send buffer again when drained
+  - ngtcp2: Rework the return value handling of ngtcp2_conn_writev_stream
+  - ngtcp2: Stop buffering crypto data
+  - ngtcp2: Utilize crypto API functions to simplify
+  - openssl: Annotate SSL3_MT_SUPPLEMENTAL_DATA
+  - openssl: When creating a new context, there cannot be an old one
+  - opt-docs: Make sure all man pages have examples
+  - opt-docs: Verify man page sections + order
+  - opts docs: Unify phrasing in NAME header
+  - output.d: Add method to suppress response bodies
+  - page-header: Add GOPHERS, simplify wording in the 1st paragraph
+  - progress: Fix a compile warning on some systems
+  - progress: Make trspeed avoid floats
+  - runtests: Add option -u to error on server unexpectedly alive
+  - schannel: Work around typo in classic mingw macro
+  - scripts: Invoke interpreters through /usr/bin/env
+  - setopt: Enable CURLOPT_IGNORE_CONTENT_LENGTH for hyper
+  - strerror.h: Remove the #include from files not using it
+  - symbols-in-versions: Fix CURLSSLBACKEND_QSOSSL last used version
+  - test1138: Remove trailing space to make work with hyper
+  - test1173: Check references to libcurl options
+  - test1280: CRLFify the response to please hyper
+  - test1565: Fix Windows build errors
+  - test365: Verify response with chunked AND Content-Length headers
+  - tests/*server.pl: Flush output before executing subprocess
+  - tests/*server.py: Remove pidfile on server termination
+  - tests/runtests.pl: Cleanup copy&paste mistakes and unused code
+  - tests/server/*.c: Align handling of portfile argument and file
+  - tests: Adjust the tftpd output to work with hyper mode
+  - tests: Be explicit about using 'python3' instead of 'python'
+  - tests: Enable test 1129 for hyper builds
+  - tests: Make three tests pass until 2037
+  - tool/tests: Fix potential year 2038 issues
+  - tool_operate: Fix --fail-early with parallel transfers
+  - url: Fix compiler warning in no-verbose builds
+  - urlapi.c:seturl: Assert URL instead of using if-check
+  - vtls: Fix typo in schannel_verify.c
+  - winbuild/README.md: Clarify GEN_PDB option
+  - wolfssl: clean up wolfcrypt error queue
+  - write-out.d: Clarify size_download/upload
+  - x509asn1: Fix heap over-read when parsing x509 certificates
+
+* Sat Jul 24 2021 Paul Howarth <paul@city-fan.org> - 7.78.0-3.0.cf
+- Make explicit dependency on openssl work with alpha/beta builds of openssl
+
+* Thu Jul 22 2021 Paul Howarth <paul@city-fan.org> - 7.78.0-2.0.cf
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
+
+* Wed Jul 21 2021 Paul Howarth <paul@city-fan.org> - 7.78.0-1.0.cf
+- Update to 7.78.0
+  - curl_url_set: Reject spaces in URLs w/o CURLU_ALLOW_SPACE
+  - CURLE_SETOPT_OPTION_SYNTAX: New error name for wrong setopt syntax
+  - hostip: Make 'localhost' return fixed values
+  - mbedtls: Add support for cert and key blob options
+  - metalink: Remove all support for it (CVE-2021-22922, CVE-2021-22923)
+  - mqtt: Add support for username and password
+  - --socks4[a]: Clarify where the host name is resolved
+  - ares: Always store IPv6 addresses first
+  - asyn-ares: Remove check for 'data' in Curl_resolver_cancel
+  - bearssl: Explicitly initialize all fields of Curl_ssl
+  - bearssl: Remove incorrect const on variable that is modified
+  - build: Fix compiler warnings when CURL_DISABLE_VERBOSE_STRINGS
+  - c-hyper: Abort CONNECT response reading early on non 2xx responses
+  - c-hyper: Add support for transfer-encoding in the request
+  - c-hyper: Bail on too long response headers
+  - c-hyper: Clear NTLM auth buffer when request is issued
+  - c-hyper: Convert HYPERE_INVALID_PEER_MESSAGE to CURLE_UNSUPPORTED_PROTOCOL
+  - c-hyper: Fix NTLM on closed connection tested with test159
+  - c-hyper: Fix the uploaded field in progress callbacks
+  - c-hyper: Handle NULL from hyper_buf_copy()
+  - c-hyper: Support CURLINFO_STARTTRANSFER_TIME
+  - c-hyper: Support CURLOPT_HEADER
+  - ccsidcurl: Fix the compile errors
+  - CI/cirrus: Install impacket from PyPI instead of FreeBSD packages
+  - CI: Add bearssl build
+  - CI: Add Circle CI
+  - CI: Add jobs using Zuul
+  - CI: Delete --enable-hsts option (it is the default now)
+  - CI: Remove travis details
+  - cleanup: Spell DoH with a lowercase o
+  - cmake: Add CURL_DISABLE_NTLM option
+  - cmake: Avoid leaking absolute paths into exported config
+  - cmake: Fix IoctlSocket FIONBIO check
+  - cmake: Fix support for UnixSockets feature on Win32
+  - cmake: Remove libssh2 feature checks
+  - cmake: Try well-known send/recv signature for Apple
+  - configure.ac: Make non-executable
+  - configure/cmake: Remove checks for many unused functions
+  - configure: Add --disable-ntlm option
+  - configure: Disable RTSP when hyper is selected
+  - configure: Do not strip out debug flags
+  - configure: Fix nghttp2 library name for static builds
+  - configure: Inhibit the implicit-fallthrough warning on gcc-12
+  - configure: Rename get-easy-option configure option to get-easy-options
+  - conn_shutdown: If closed during CONNECT, clean up properly
+  - conncache: Lowercase the hash key for better match
+  - cookies: Track expiration in jar to optimize removals
+  - copyright: Add boiler-plate headers to CI config files
+  - crustls: Bump crustls version and use new URL
+  - curl.h: <sys/select.h> is supported by VxWorks7
+  - curl.h: include sys/select.h for NuttX RTOS
+  - curl: Ignore blank --output-dir
+  - curl_endian: Remove the unused Curl_write64_le function
+  - curl_multibyte: Remove local encoding fallbacks
+  - Curl_ntlm_core_mk_nt_hash: Fix OOM in error path
+  - Curl_ssl_getsessionid: Fail if no session cache exists
+  - CURLOPT_WRITEFUNCTION.3: Minor update of the example
+  - docs/BINDINGS: Fix outdated links
+  - docs/examples: Use curl_multi_poll() in multi examples
+  - docs/INSTALL: Remove mentions of configure --with-darwin-ssl
+  - docs: Document missing arguments to commands
+  - docs: Fix inconsistencies in EGDSOCKET documentation
+  - docs: Fix incorrect argument name reference
+  - docs: Fix typos
+  - docs: Make docs for --etag-save match the program behaviour
+  - docs: Use --max-redirs instead of --max-redir
+  - doh: (void)-prefix call to curl_easy_setopt
+  - doh: Fix wrong DEBUGASSERT for doh private_data
+  - easy: During upkeep, attach Curl_easy to connections in the cache
+  - examples/multi-single: Fix scan-build warning
+  - examples: length-limit two sscanf() uses of %%s
+  - examples: Safer and more proper read callback logic
+  - filecheck: Quietly remove test-place/*~
+  - formdata: Avoid "Argument cannot be negative" warning
+  - formdata: Correct typecast in curl_mime_data call
+  - GHA: Add a linux-hyper job
+  - GHA: Add several libcurl tests to the hyper job
+  - GHA: Run the newly fixed tests with hyper
+  - github: Timeout jobs on macOS after 90 minutes
+  - glob: Pass an 'int' as len when using printf's %%*s
+  - gnutls: Set the preferred TLS versions in correct order
+  - GOVERNANCE: Add 'user', 'committer' and 'contributor'
+  - hostip: (macOS) free returned memory of SCDynamicStoreCopyProxies
+  - hostip: Bad CURLOPT_RESOLVE syntax now returns error
+  - hsts: Ignore numerical IP address hosts
+  - HSTS: Not experimental anymore
+  - http2: Clarify 'Using HTTP2' verbose message
+  - http2: init recvbuf struct for pushed streams
+  - http2_connisdead: Handle trailing GOAWAY better
+  - http: Fix crash in rate-limited upload
+  - http: Make the haproxy support work with unix domain sockets
+  - http_proxy: Deal with non-200 CONNECT response with Hyper
+  - hyper: Propagate errors back up from read callbacks
+  - HYPER: Remove mentions of deprecated development branch
+  - idn: Fix libidn2 with windows unicode builds
+  - infof: Remove newline from format strings, always append it
+  - lib: Don't compare fd to FD_SETSIZE when using poll
+  - lib: Fix compiler warnings with CURL_DISABLE_NETRC
+  - lib: Fix type of len passed to *printf's %%*s
+  - lib: More %%u for port and int for %%*s fixes
+  - lib: Use %%u instead of %%ld for port number printf
+  - libcurl-security.3: Mention file descriptors and forks
+  - libssh2: Limit time a disconnect can take to 1 second
+  - mbedtls: Make mbedtls_strerror always work
+  - mbedtls: Remove unnecessary include
+  - mqtt: Detect illegal and too large file size
+  - mqtt: Extend the error message for no topic
+  - msnprintf: Return number of printed characters excluding null byte
+  - multi: Add scan-build-6 work-around in curl_multi_fdset
+  - multi: Alter transfer timeout ordering
+  - multi: Do not switch off connect_only flag when closing
+  - multi: Fix crash in curl_multi_wait / curl_multi_poll
+  - netrc: Skip 'macdef' definitions
+  - ngtcp2: Disable TLSv1.3 compatible mode when using GnuTLS
+  - openssl: Avoid static variable for seed flag
+  - openssl: Don't remove session id entry in disassociate
+  - pinnedpubkey.d: Fix formatting for version support lists
+  - proto.d: Fix formatting for paragraphs after margin changes
+  - quiche: Use send() instead of sendto() to avoid macOS issue
+  - Revert "c-hyper: handle body on HYPER_TASK_EMPTY"
+  - Revert "ftp: Expression 'ftpc->wait_data_conn' is always false"
+  - runtests: Also find the last test in Makefile.inc
+  - runtests: Enable 'hyper mode' only for HTTP tests
+  - runtests: init $VERSION to avoid warnings when using -l
+  - runtests: Parse data/Makefile.inc instead of using make
+  - runtests: Skip disabled tests unless -f is used
+  - rustls: Remove native_roots fallback
+  - schannel: Set ALPN length correctly for HTTP/2
+  - SChannel: Use '_tcsncmp()' instead
+  - sectransp: Check for client certs by name first, then file (CVE-2021-22926)
+  - setopt: Fix incorrect comments
+  - socketpair: Fix potential hangs
+  - socks4: Scan for the IPv4 address in resolve results
+  - ssl: Read pending close notify alert before closing the connection
+  - sws: malloc request struct instead of using stack
+  - telnet: Fix option parser to not send uninitialized contents
+    (CVE-2021-22925)
+  - test1116: hyper doesn't pass through "surprise-trailers"
+  - test1147: hyper doesn't allow "crazy" request headers like built-in
+  - test1151: Added missing CRLF to work with hyper
+  - test1216: Adjusted for hyper mode
+  - test1218: Adjusted for hyper mode
+  - test1230: Adjust to work in hyper mode
+  - test1340/1341: Adjusted for hyper mode
+  - test1438/1457: Add HTTP keyword to make hyper mode work
+  - test1514: Add a CRLF to the response to make it correct
+  - test1518: Adjusted to work with hyper
+  - test1519: Adjusted to work with hyper
+  - test1594/1595/1596: Fix to work in hyper mode
+  - test269: Disable for hyper
+  - test3010: Work with hyper mode
+  - test328: Avoid a header-looking body to make hyper mode work
+  - test339: CRLFify better to work in hyper mode
+  - test347: CRLFify to work in hyper mode
+  - test393: Make Content-Length fit within 64 bit for hyper
+  - test394: hyper returns a different error
+  - test395: hyper cannot work around > 64 bit content-lengths like built-in
+  - test433: Adjust for hyper mode
+  - test434: Add HTTP keyword
+  - test500: Adjust to work with hyper mode
+  - test566: Adjust to work with hyper mode
+  - test599: Adjusted to work in hyper mode
+  - test644: Remove as duplicate of test 587
+  - tests: Fix Accept-Encoding strips to work with Hyper builds
+  - TLS: Prevent shutdown loops to get stuck
+  - tool: Make _lseeki64() macro work with the PellesC compiler
+  - tool_help: Document that --tlspassword takes a password
+  - tool_help: Remove unused define
+  - url.c: Remove two variable assigns that are never read
+  - url: (void)-prefix a curl_url_get() call
+  - url: Bad CURLOPT_CONNECT_TO syntax now returns error
+  - version: Turn version number functions into returning void
+  - vtls: exit addsessionid if no cache is inited
+  - vtls: Fix connection reuse checks for issuer cert and case sensitivity
+    (CVE-2021-22924)
+  - vtls: Only store TIMER_APPCONNECT for non-proxy connect
+  - vtls: Use free() not curl_free()
+  - warnless: Simplify type size handling
+  - Win32: Fix build with Watt-32
+  - winbuild/README: VC should be set to 6 'or larger'
+  - winbuild: Support alternate nghttp2 static lib name
+  - wolfssl: Failing to set a session id is not reason to error out
+  - write-out.d: Clarify urlnum is not unique for de-globbed URLs
+  - zuul: Use the new rustls directory name
+- Fix dist tags for Alma and Rocky Linux
+
+* Thu Jun  3 2021 Paul Howarth <paul@city-fan.org> - 7.77.0-2.0.cf
+- Build the curl tool without metalink support (#1967213)
+  https://curl.se/mail/archive-2021-06/0006.html
+  https://github.com/curl/curl/pull/7176
+
+* Wed May 26 2021 Paul Howarth <paul@city-fan.org> - 7.77.0-1.0.cf
+- Update to 7.77.0
+  - CVE-2021-22297: schannel cipher selection surprise
+  - CVE-2021-22298: TELNET stack contents disclosure
+  - CVE-2021-22901: TLS session caching disaster
+  - configure: Make the TLS library choice(s) explicit
+  - curl: Ignore options asking for SSLv2 or SSLv3
+  - hsts: Enable by default
+  - SSL: Support in-memory CA certs for some backends
+  - vtls: Refuse setting any SSL version
+  - AmigaOS: Add functions definitions for SHA256
+  - build: Fix compilation for Windows UWP platform
+  - c-hyper: Don't write to set.writeheader if null
+  - c-hyper: Fix handling of zero-byte chunk from hyper
+  - c-hyper: Handle body on HYPER_TASK_EMPTY
+  - checksrc: Complain on == NULL or != 0 checks in conditions
+  - CI/cirrus: Add shared and static Windows release builds
+  - cmake: Add CURL_ENABLE_EXPORT_TARGET option
+  - cmake: Check for getppid and utimes
+  - cmake: Detect CURL_SA_FAMILY_T
+  - cmake: Fix two invokes result in different curl_config.h
+  - cmake: Make libcurl output filename configurable
+  - cmake: Use multithreaded compilation on VS 2008+
+  - config: Remove now-unused macros
+  - configure: If asked for, fail if ldap is not found
+  - configure: Provide --with-openssl, deprecate --with-ssl
+  - conn: Add 'attach' to protocol handler, make libssh2 use it
+  - connect: Use CURL_SA_FAMILY_T for portability
+  - ConnectionExists: Respect requests for h1 connections better
+  - cookie: CURLOPT_COOKIEFILE set to NULL switches off cookies
+  - curl-wolfssl.m4: Without custom include path, assume /usr/include
+  - curl: Include libmetalink version in --version output
+  - Curl_http_header: Check for colon when matching Persistent-Auth
+  - Curl_http_input_auth: Require valid separator after negotiation type
+  - Curl_input_digest: Require space after Digest
+  - curl_mprintf.3: Add description
+  - curl_setup: Provide the shutdown flags wider
+  - curl_url_set.3: Add memory management information
+  - CURLcode: Add CURLE_SSL_CLIENTCERT
+  - CURLOPT_CAPATH.3: Defaults to a path, not NULL
+  - CURLOPT_IPRESOLVE: Preventing wrong IP version from being used
+  - CURLOPT_POSTFIELDS.3: Clarify how it gets the size of the data
+  - data_pending: Check only SECONDARY socket for FTP(S) transfers
+  - docs/TheArtOfHttpScripting: Fix markdown links
+  - docs: CamelCase it like GitHub everywhere
+  - docs: Cookies from HTTP headers need domain set
+  - docs: Fix typo in fail-with-body doc
+  - docs: Improve INTERNALS.md regarding getsock cb
+  - docs: Replace dots with dashes in markdown enums
+  - easy: Ignore sigpipe in curl_easy_send
+  - FILEFORMAT: Mention sectransp as a feature
+  - GIT-INFO: Suggest using autoreconf instead of buildconf
+  - GitHub: Add a workflow with libssh2 on macOS using cmake
+  - GitHub: Inhibit deprecated declarations for clang on macOS
+  - GnuTLS: Don't allow TLS 1.3 for versions that don't support it
+  - gnutls: Make setting only the MAX TLS allowed version work
+  - gskit: Fix CURL_DISABLE_PROXY build
+  - gskit: Fix undefined reference to 'conn'
+  - hostip.h: Remove declaration of unimplemented function
+  - hostip: Remove the debug code for LocalHost
+  - http2: Call the handle-closed function correctly on closed stream
+  - http2: Fix a resource leak in push_promise()
+  - http2: Fix resource leaks in set_transfer_url()
+  - http2: Make sure pause is done on HTTP
+  - http2: Move the stream error field to the per-transfer storage
+  - http2: Skip immediate parsing of payload following protocol switch
+  - http2: Use nghttp2_session_upgrade2 instead of nghttp2_session_upgrade
+  - HTTP3.md: Fix nghttp2's HTTP/3 server port
+  - HTTP3.md: Make the ngtcp2 build use the quictls fork
+  - http: Deal with partial CONNECT sends
+  - http: Fix the check for 'Authorization' with Bearer
+  - http: Limit the initial send amount to used upload buffer size
+  - http: Reset the header buffer when sending the request
+  - http: Use offsets inst of integer literals for header parsing
+  - INSTALL: Add IBM i specific quirks
+  - krb5/name_to_level: Replace checkprefix with curl_strequal
+  - krb5: Don't use 'static' to store PBSZ size response
+  - krb5: Remove the unused 'overhead' function
+  - lib/hostip6.c: Make NAT64 address synthesis on macOS work
+  - lib1564.c: Enable last wakeup test part on Windows
+  - lib: Fix 0-length Curl_client_write calls
+  - lib: Fix some misuse of curlx_convert_UTF8_to_tchar
+  - libcurl-security.3: Be careful of setuid
+  - libcurl-security.3: Don't try to filter IPv4 hosts based on the URL
+  - libcurl.3: Mention the URL API
+  - libssh2: Fix Value stored to 'sshp' is never read
+  - libssh2: Ignore timeout during disconnect
+  - libssh: Fix "empty expression statement has no effect" warnings
+  - libtest: Remove lib530.c
+  - m4: Add security frameworks on Mac when compiling rustls
+  - multi: Don't close connection HTTP_1_1_REQUIRED
+  - multi: Fix slow write/upload performance on Windows
+  - multi: Reduce Win32 API calls to improve performance
+  - ngtcp2: Fix the cb_acked_stream_data_offset proto
+  - NSS: Add ciphers to map
+  - NSS: Make colons, commas and spaces valid separators in cipher list
+  - nss_set_blocking: Avoid static for sock_opt
+  - ntlm: Precaution against super huge type2 offsets
+  - openldap: Protect SSL-specific code with proper #ifdef
+  - openldap: Replace ldap_ prefix on private functions
+  - openssl: fix build error with OpenSSL < 1.0.2
+  - openssl: Remove unneeded cast for CertOpenSystemStore()
+  - os400: Additional support for options metadata
+  - progress: Fix scan-build-11 warnings
+  - progress: Reset limit_size variables at transfer start
+  - progress: When possible, calculate transfer speeds with microseconds
+  - README.md: Delete Codacy UTM parameters
+  - Revert "Revert 'multi: implement wait using winsock events'"
+  - rustls: Only return CURLE_AGAIN when TLS session is fully drained
+  - rustls: Use ALPN
+  - sasl: Use 'unsigned short' to store mechanism
+  - schannel: Disable auto credentials; add an option to enable it
+  - schannel: Support strong crypto option
+  - sectransp: Allow cipher name to be specified
+  - sectransp: Fix EXC_BAD_ACCESS caused by uninitialized buffer
+  - sigpipe: Ignore SIGPIPE when using wolfSSL as well
+  - sockfilt: Avoid getting stuck waiting for writable socket
+  - sockfilt: Fix invalid increment of handles index variable nfd
+  - sws: #ifdef S_IFSOCK use
+  - sws: Allow HTTP requests up to 2MB in size
+  - test server: Take care of siginterrupt() deprecation
+  - test2100: Make it run with and require IPv6
+  - tests/disable-scan.pl: Also scan all m4 files
+  - tests/getpart: Generate output URL encoded for better diffs
+  - tests: Ignore case of chunked hex numbers in tests
+  - tls: Add USE_HTTP2 define
+  - tool_getparam: Handle failure of curlx_convert_tchar_to_UTF8()
+  - tool_getparam: Replace (in-place) '%20' by '+' according to RFC1866
+  - tool_operate: Don't discard failed parallel transfer result
+  - tool_writeout: Fix the HTTP_CODE json output
+  - travis: Disable the failing libssh build
+  - URL-SYNTAX: Update IDNA section for WHATWG spec changes
+  - urlapi: "normalize" numerical IPv4 host names
+  - vauth: Factor base64 conversions out of authentication procedures
+  - version: Add gsasl_version to curl_version_info_data
+  - version: Add OpenLDAP version in the output
+  - vtls: Deduplicate some DISABLE_PROXY ifdefs
+  - vtls: Reset ssl use flag upon negotiation failure
+  - wolfssl: Handle SSL_write() returns 0 for error
+  - wolfssl: Remove SSLv3 support leftovers
+- Add patch to kill the gophers server after testing that protocol, so that
+  the port it uses can be re-used by later tests
+
+* Tue May  4 2021 Paul Howarth <paul@city-fan.org> - 7.76.1-2.0.cf
+- http2: Fix resource leaks detected by Coverity
+
+* Wed Apr 14 2021 Paul Howarth <paul@city-fan.org> - 7.76.1-1.0.cf
+- Update to 7.76.1
+  - configure: Disable min version set for Darwin
+  - configure: include <time.h> unconditionally
+  - configure: Remove use of RETSIGTYPE
+  - docs/HTTP3.md: Update the build instruction using gnutls
+  - examples/hiperfifo.c: Check event_initialized before delete
+  - file: Support GETing directories again
+  - github/workflow: Add "security-extended" to codeql-analysis.yml
+  - h2: Allow 100 streams by default
+  - hostip: Fix builds that disable all asynchronous DNS
+  - http_proxy: Only loop on 407 + close if we have credentials
+  - install: Add instructions for Apple Darwin platforms
+  - lib: Remove unused HAVE_INET_NTOA_R* defines
+  - libssh: Get rid of PATH_MAX
+  - ngtcp2+gnutls: Clear credentials when freed
+  - ngtcp2: Use ALPN h3-29 for now
+  - ntlm: Fix negotiated flags usage
+  - ntlm: Support version 2 on 32-bit platforms
+  - openssl: Fix CURLOPT_SSLCERT_BLOB without CURLOPT_SSLCERT_KEY
+  - TLS: Fix HTTP/2 selection
+  - tool_progress: Fix progress meter final update in parallel mode
+  - typecheck-gcc: Make the ssl-ctx-cb check use SSL_CTX pointers
+
+* Wed Mar 31 2021 Paul Howarth <paul@city-fan.org> - 7.76.0-1.0.cf
+- Update to 7.76.0
+  - cookies: Support multiple -b parameters
+  - curl: Add --fail-with-body
+  - doh: Add options to disable ssl verification
+  - http: Add support to read and store the referrer header
+  - sasl: Support SCRAM-SHA-1 and SCRAM-SHA-256 via libgsasl
+  - vtls: Initial implementation of rustls backend
+  - CVE-2021-22876: Strip credentials from the auto-referer header field
+  - CVE-2021-22890: Add 'isproxy' argument to Curl_ssl_get/addsessionid()
+  - asyn-ares: Use consistent resolve error message
+  - BUG-BOUNTY: Removed the cooperation mention
+  - build: Delete unused feature guards
+  - build: Fix --disable-dateparse
+  - build: Fix --disable-http-auth
+  - build: Remove all traces of USE_BLOCKING_SOCKETS
+  - c-hyper: Remove superfluous pointer check
+  - c-hyper: Support automatic content-encoding
+  - CI/azure: Disable test 433 on azure-ubuntu
+  - CI/azure: Replace python-impacket with python3-impacket
+  - ci: Stop building on freebsd-12-1
+  - cmake: Fix import library name for non-MS compiler on Windows
+  - cmake: Use CMAKE_INSTALL_INCLUDEDIR indirection
+  - cmake: Support WinIDN
+  - config: Fix building SMB with configure using Win32 Crypto
+  - config: Fix detection of restricted Windows App environment
+  - configure: Fail if --with-quiche is used and quiche isn't found
+  - configure: Make AC_TRY_* into AC_*_IFELSE
+  - configure: Make hyper opt-in, and fail if missing
+  - configure: Only add OpenSSL paths if they are defined
+  - configure: Provide Largefile feature for curl-config
+  - configure: Remove use of deprecated macros
+  - configure: s/AC_HELP_STRING/AS_HELP_STRING/
+  - cookies: Fix potential NULL pointer deref with PSL
+  - curl: Set CURLOPT_NEW_FILE_PERMS if requested
+  - curl_easy_setopt.3: Add curl_easy_option* functions to SEE ALSO
+  - curl_multibyte: Always return a heap-allocated copy of string
+  - curl_multibyte: Fall back to local code page stat/access on Windows
+  - Curl_timeleft: Check both timeouts during connect
+  - curl_url_set.3: Mention CURLU_PATH_AS_IS
+  - CURLOPT_QUOTE.3: Clarify that libcurl doesn't parse what's sent
+  - docs/HTTP2: Remove the outdated remark about multiplexing for the tool
+  - docs/Makefile.inc: Format to be update-friendly
+  - docs: Add CURLOPT_CURLU to 'See also' in curl_url_ functions
+  - docs: Add missing Arg tag to --stderr
+  - docs: Add SSL backend names to CURL_SSL_BACKEND
+  - docs: Clarify timeouts for queued transfers in multi API
+  - docs: Explain DOH transfers inherit some SSL settings
+  - docs: Fix FILE example url in --metalink documentation
+  - docs: Make gen.pl support *italic* and **bold**
+  - doh: Fix sharing user's resolve list with DOH handles
+  - doh: Inherit CURLOPT_STDERR from user's easy handle
+  - dynbuf: Bump the max HTTP request to 1MB
+  - examples: Remove threaded-shared-conn.c due to bug
+  - file: Support unicode urls on windows
+  - ftp: Add 'list_only' to the transfer state struct
+  - ftp: Add 'prefer_ascii' to the transfer state struct
+  - FTP: Allow SIZE to fail when doing (resumed) upload
+  - ftp: Avoid SIZE when asking for a TYPE A file
+  - ftp: Fix Codacy/cppcheck warning about null pointer arithmetic
+  - ftp: Fix memory leak in ftp_done
+  - ftp: Never set data->set.ftp_append outside setopt
+  - gen.pl: Quote "bare" minuses in the nroff curl.1
+  - github: Add torture-ftp for FTP-only torture testing
+  - gnutls: Assume nettle crypto support
+  - gskit: Correct the gskit_send() prototype
+  - hostip: Fix build with sync resolver
+  - hostip: Fix crash in sync resolver builds that use DOH
+  - hsts: Remove unused defines
+  - http2: Don't set KEEP_SEND when there's no more data to be sent
+  - http2: Fail if connection terminated without END_STREAM
+  - http: Cap body data amount during send speed limiting
+  - http: Do not add a referrer header with empty value
+  - http: Make 416 not fail with resume + CURLOPT_FAILONERRROR
+  - http: Remove superfluous NULL assign
+  - http: Strip default port from URL sent to proxy
+  - http: Use credentials from transfer, not connection
+  - ldap: Use correct memory free function
+  - lib1536: Check ptr against NULL before dereferencing it
+  - lib1537: Check ptr against NULL before dereferencing it
+  - lib: Remove 'conn->data' completely
+  - libssh2: kdb_callback: Get the right struct pointer
+  - libssh2:ssh_connect: Clear session pointer after free
+  - memdebug: Close debug logfile explicitly on exit
+  - mingw: Enable using strcasecmp()
+  - multi: Close the connection when h2=>h1 downgrading
+  - multi: Do once-per-transfer inits in before_perform in DID state
+  - multi: Rename the multi transfer states
+  - multi: Update pending list when removing handle
+  - ngtcp2: Adapt to the new recv_datagram callback
+  - ngtcp2: Clarify calculation precedence
+  - ngtcp2: Fix build error due to change in ngtcp2_addr_init
+  - ngtcp2: Sync with recent API updates
+  - openldap: Avoid NULL pointer dereferences
+  - openssl: Adapt to v3's new const for a few API calls
+  - openssl: Ensure to check SSL_CTX_set_alpn_protos return values
+  - openssl: Remove get_ssl_version_txt in favour of SSL_get_version
+  - openssl: Set the transfer pointer for logging early
+  - OS400: Update for CURLOPT_AWS_SIGV4
+  - parse_proxy: Fix a memory leak in the OOM path
+  - pathhelp.pm: Fix use of pwd -L in Msys environment
+  - projects: Update VS projects for OpenSSL 1.1.x
+  - quiche: Fix build error: use 'int' for port number
+  - quiche: Fix crash when failing to connect
+  - retry-all-errors.d: Explain curl errors versus HTTP response errors
+  - retry.d: Clarify transient 5xx HTTP response codes
+  - runtests.pl: Add %%TESTNUMBER variable to make copying tests more convenient
+  - runtests.pl: Add a -P option to specify an external proxy
+  - runtests.pl: Kill processes locking test log files
+  - setopt: Error on CURLOPT_HTTP09_ALLOWED set true with Hyper
+  - test1188: Change error to check for: --fail HTTP status
+  - test220/314: Adjust to run with Hyper
+  - test304: Header CRLF cleanup to work with Hyper
+  - test306: Make it not run with Hyper
+  - tests: Disable .curlrc in more environments
+  - tests: Use %%TESTNUMBER instead of fixed number
+  - tftp: Remove the 3600 second default timeout
+  - time: Enable 64-bit time_t in supported mingw environments
+  - tool_help: Add missing argument for --create-file-mode
+  - tool_help: Increase space between option and description
+  - tool_operate: Bail if set CURLOPT_HTTP09_ALLOWED returns error
+  - travis: Add a rustls build
+  - travis: Bump wolfssl to 4.7.0
+  - travis: Only build wolfssl when needed
+  - travis: Split "torture" into a separate "events" build
+  - travis: Switch ngtcp2 build over to quictls
+  - travis: Use ubuntu nghttp2 package instead of build our own
+  - url.c: Use consistent error message for failed resolve
+  - url: Fix memory leak if OOM in the HSTS handling
+  - url: Fix possible use-after-free in default protocol
+  - urldata: Don't touch data->set.httpversion at run-time
+  - urldata: Fix build without HTTP and MQTT
+  - urldata: Make 'actions[]' use unsigned char instead of int
+  - urldata: Merge "struct DynamicStatic" into "struct UrlState"
+  - urldata: Remove the 'rtspversion' field
+  - urldata: Remove the _ORIG suffix from string names
+  - version.d: Add missing features to the features list
+  - wolfssl: Don't store a NULL sessionid
+
+* Wed Mar 24 2021 Paul Howarth <paul@city-fan.org> - 7.75.0-3.0.cf
+- Fix SIGSEGV upon disconnect of a ldaps:// transfer (#1941925)
+
+* Wed Feb 24 2021 Paul Howarth <paul@city-fan.org> - 7.75.0-2.0.cf
+- Don't anticipate python3-impacket being available for EL-9 builds
+
+* Fri Feb 12 2021 Paul Howarth <paul@city-fan.org> - 7.75.0-1.1.cf
+- Use unstripped library from the build dir for %%check: it results in more
+  detailed backtraces in valgrind's output
+- Re-enable tests that had previously been disabled
+
+* Wed Feb  3 2021 Paul Howarth <paul@city-fan.org> - 7.75.0-1.0.cf
+- Update to 7.75.0
+  - curl: Add --create-file-mode [mode]
+  - curl: Add new variables to --write-out
+  - dns: Extend CURLOPT_RESOLVE syntax for adding non-permanent entries
+  - gopher: Implement secure gopher protocol
+  - http: Add Hyper as new optional HTTP backend
+  - http: Introduce AWS HTTP v4 Signature support
+  - badsymbols.pl: Add verbose mode -v
+  - badsymbols.pl: Ignore stand-alone single hash lines
+  - BUG-BOUNTY: Minor language updates
+  - build: Fix djgpp builds
+  - cleanup: Fix empty expression statement has no effect
+  - cmake: Add an option to disable libidn2
+  - cmake: Enable gophers correctly in curl-config
+  - cmake: Expose CURL_DISABLE_OPENSSL_AUTO_LOAD_CONFIG
+  - cmdline-opts/gen.pl: Return hard on errors
+  - cmdline-opts/retry.d: Mention response code 429 as well
+  - configure: Set -Wextra-semi-stmt for clang with --enable-debug
+  - connect: Defer port selection until connect() time
+  - connect: Mark intentional ignores of setsockopt return values
+  - connect: On linux, enable reporting of all ICMP errors on UDP sockets
+  - connect: Zero variable on stack to silence valgrind complaint
+  - cookie: Avoid the C1001 internal compiler error with MSVC 14
+  - curl.1: Fix typo microsft → microsoft
+  - curl: Fix handling of -q option
+  - curl: Include the file name in --xattr/--remote-time error msgs
+  - curl: Move fprintf outputs to warnf
+  - Curl_chunker: Shrink the struct
+  - curl_easy_pause.3: Add multiplexed pause effects
+  - CURLINFO_PRETRANSFER_TIME.3: Clarify
+  - CURLOPT_URL.3: Remove scheme specific details
+  - digest_sspi: Show InitializeSecurityContext errors in verbose mode
+  - docs/examples: Adjust prototypes for CURLOPT_READFUNCTION
+  - docs/URL-SYNTAX: The URL syntax curl accepts and works with
+  - docs: Enable syntax highlighting in several docs files
+  - docs: Fix line length bug in gen.pl
+  - docs: Fix typos in NEW-PROTOCOL.md
+  - docs: Fix wrong documentation in help.d
+  - docs: Remove redundant "better" in --fail help
+  - doh: Allocate state struct on demand
+  - examples/libtest: Add .checksrc to dist
+  - examples: Remove superfluous asterisk uses
+  - failf: Remove newline from formatting strings
+  - file: Don't provide content-length for directories
+  - getinfo: Build with disabled HTTP support
+  - gitattributes: Set batch files to CRLF line endings on checkout
+  - h2: Do not wait for RECV on paused transfers
+  - HISTORY: Added dates to early history
+  - http: Empty reply connection are not left intact
+  - http: Get CURLOPT_REQUEST_TARGET working with a HTTP proxy
+  - http: Have CURLOPT_FAILONERROR fail after all headers
+  - http: Make providing Proxy-Connection header not cause duplicated headers
+  - http: Show the request as headers even when split-sending
+  - http_chunks: Correct and clarify a comment on hexnumber length
+  - http_proxy: Fix CONNECT chunked encoding race condition
+  - httpauth: Make multi-request auth work with custom port
+  - INSTALL: Now at 85 operating systems
+  - INSTALL: Update the list known OSes and CPU archs curl has run on
+  - lib/unit tests: Add missing curl_global_cleanup() calls
+  - lib1564/5: Verify that curl_multi_wakeup returns OK
+  - lib: Pass in 'struct Curl_easy *' to most functions
+  - lib: Remove Curl_ prefix from many static functions
+  - lib: Save a bit of space with some structure packing
+  - libssh2: Fix "Value stored to 'readdir_len' is never read"
+  - libssh2: Move data from connection object to transfer object
+  - libssh: Avoid plain free() of libssh-memory
+  - mime: Make sure setting MIMEPOST to NULL resets properly
+  - misc: Assorted typo fixes
+  - misc: Fix "warning: empty expression statement has no effect"
+  - misc: Fix typos
+  - mk-ca-bundle.pl: Deterministic output when using -t
+  - mqtt: Deal with 0 byte reads correctly
+  - mqtt: Handle POST/PUBLISH without a set POSTFIELDSIZE
+  - multi: Set the PRETRANSFER time-stamp when we switch to PERFORM
+  - multi: Skip DONE state if there's no connection left for ftp wildcard
+  - multi: When erroring in TOOFAST state, act as for PERFORM
+  - multi_runsingle: Bail out early on data->conn == NULL
+  - ngtcp2: Fix http3 upload stall
+  - ngtcp2: Fix stack buffer overflow
+  - ngtcp2: Make it build it current master again
+  - nss: Get the run-time version instead of build-time
+  - openssl: Lowercase the hostname before using it for SNI
+  - OS400: Update ccsidcurl.c
+  - pretransfer: Set up the User-Agent header here
+  - quiche: Remove fprintf() leftover
+  - Revert "CI/github: work-around for brew breakage on macOS"
+  - runtests: Add 'wakeup' as a feature
+  - runtests: Add support for %%if [feature] conditions
+  - runtests: Pre-process DISABLED to allow conditionals
+  - schannel: Plug a memory leak
+  - schannel_verify: Fix safefree call typo
+  - select: Convert Curl_select() to private static function
+  - socks: Use the download buffer instead
+  - speedcheck: Exclude paused transfers
+  - strerror: Skip errnum >= 0 assertion on Windows
+  - test1522: Add debug tracing
+  - test1633: Set appropriate name
+  - test179: Use consistent header line endings
+  - test410: Verify HTTPS GET with a 49K request header
+  - tests/mqttd: Extract the client id from the correct offset
+  - tests: Make --libcurl tests only test FTP options if ftp enabled
+  - tool_doswin: Restore original console settings on CTRL signal
+  - tool_operate: Fix the suppression logic of some error messages
+  - tool_operate: Spellfix a comment
+  - tooĺ_writeout: Fix the -w time output units
+  - transfer: Fix GCC 10 warning with flag '-Wint-in-bool-context'
+  - travis: Build ngtcp2 --with-gnutls
+  - travis: Limit the tests with quiche builds to HTTPS and FTPS only
+  - travis: Restrict the openssl3 job to only run https and ftps tests
+  - url: If IDNA conversion fails, fallback to Transitional
+  - urldata: Make magic be the first struct field
+  - urldata: Remove 'local_ip' from the connectdata struct
+  - urldata: Remove duplicate 'upkeep_interval_ms' from connectdata
+  - urldata: Remove duplicate port number storage
+  - urldata: Remove the duplicate 'ip_addr_str' field
+  - urldata: Store ip version in a single byte
+  - vtls: Remove md5sum
+  - warnless: Remove curlx_ultosi
+  - wolfssl: Add SECURE_RENEGOTIATION support
+  - wolfssl: Support wolfSSL builds missing TLS 1.1
+- Disable failing test 1592 for now
+
+* Tue Jan 26 2021 Paul Howarth <paul@city-fan.org> - 7.74.0-4.0.cf
+- Do not use stunnel for tests on s390x builds to avoid spurious failures
+- Drop support for EOL distributions prior to F-19
+  - Always build with Posix threaded DNS lookups rather than using c-ares
+  - Always build with libpsl
+  - %%{_datadir}/aclocal is always included in the filesystem package
+  - Drop workarounds for failing SSH tests on old Fedora releases
+  - Use %%license unconditionally
+
+* Thu Dec 10 2020 Paul Howarth <paul@city-fan.org> - 7.74.0-2.0.cf
+- Do not rewrite shebangs in test suite to use python3 explicitly
+
+* Wed Dec  9 2020 Paul Howarth <paul@city-fan.org> - 7.74.0-1.0.cf
+- Update to 7.74.0
+  - hsts: Add experimental support for Strict-Transport-Security
+  - CVE-2020-8286: Inferior OCSP verification
+  - CVE-2020-8285: FTP wildcard stack overflow
+  - CVE-2020-8284: Trusting FTP PASV responses
+  - acinclude: Detect manually set minimum macos/ipod version
+  - alt-svc: Enable (in the build) by default
+  - alt-svc: Minimize variable scope and avoid "DEAD_STORE"
+  - asyn: Use 'struct thread_data *' instead of 'void *'
+  - checksrc: Warn on empty line before open brace
+  - CI/appveyor: Disable test 571 in two cmake builds
+  - CI/azure: Improve on flakiness by avoiding libtool wrappers
+  - CI/tests: Enable test target on TravisCI for CMake builds
+  - CI/travis: Add brotli and zstd to the libssh2 build
+  - cirrus: Build with FreeBSD 12.2 in CirrusCI
+  - cmake: Call the feature unixsockets without dash
+  - cmake: Check for linux/tcp.h
+  - cmake: Correctly handle linker flags for static libs
+  - cmake: Don't pass -fvisibility=hidden to clang-cl on Windows
+  - cmake: Don't use reserved target name 'test'
+  - cmake: Make BUILD_TESTING dependent option
+  - cmake: Make CURL_ZLIB a tri-state variable
+  - cmake: Set the unicode feature in curl-config on Windows
+  - cmake: Store IDN2 information in curl_config.h
+  - cmake: Use libcurl.rc in all Windows builds
+  - configure: Pass -pthread to Libs.private for pkg-config
+  - configure: Use pkgconfig to find openSSL when cross-compiling
+  - connect: Repair build without ipv6 availability
+  - curl.1: Add an "OUTPUT" section at the top of the manpage
+  - curl.se: New home
+  - curl: Add compatibility for Amiga and GCC 6.5
+  - curl: Only warn not fail, if not finding the home dir
+  - curl_easy_escape: Limit output string length to 3 * max input
+  - Curl_pgrsStartNow: Init speed limit time stamps at start
+  - curl_setup: USE_RESOLVE_ON_IPS is for Apple native resolver use
+  - curl_url_set.3: Fix typo in the RETURN VALUE section
+  - CURLOPT_DNS_USE_GLOBAL_CACHE.3: Fix typo
+  - CURLOPT_HSTS.3: Document the file format
+  - CURLOPT_NOBODY.3: Fix typo
+  - CURLOPT_TCP_NODELAY.3: Fix comment in example code
+  - CURLOPT_URL.3: Clarify SCP/SFTP URLs are for uploads as well
+  - docs: Document the 8MB input string limit
+  - docs: Fix typos and markup in ETag manpage sections
+  - docs: Fix various typos in documentation
+  - examples/httpput: Remove use of CURLOPT_PUT
+  - FAQ: Refreshed
+  - file: Avoid duplicated code sequence
+  - ftp: Retry getpeername for FTP with TCP_FASTOPEN
+  - gnutls: Fix memory leaks (certfields memory wasn't released)
+  - header.d: Mention the "Transfer-Encoding: chunked" handling
+  - HISTORY: The new domain
+  - http3: Fix two build errors, silence warnings
+  - http3: Use the master branch of GnuTLS for testing
+  - http: Pass correct header size to debug callback for chunked post
+  - http_proxy: Use enum with state names for 'keepon'
+  - httpput-postfields.c: New example doing PUT with POSTFIELDS
+  - infof/failf calls: Fix format specifiers
+  - libssh2: Fix build with disabled proxy support
+  - libssh2: Fix transport over HTTPS proxy
+  - libssh2: Require version 1.0 or later
+  - Makefile.m32: Add support for HTTP/3 via ngtcp2+nghttp3
+  - Makefile.m32: Add support for UNICODE builds
+  - mqttd: fclose test file when done
+  - NEW-PROTOCOL: Document what needs to be done to add one
+  - ngtcp2: Adapt to recent nghttp3 updates
+  - ngtcp2: Advertise h3 ALPN unconditionally
+  - ngtcp2: Fix build error due to symbol name change
+  - ngtcp2: Use the minimal version of QUIC supported by ngtcp2
+  - ntlm: Avoid malloc(0) on zero length user and domain
+  - openssl: Acknowledge SRP disabling in configure properly
+  - openssl: Free mem_buf in error path
+  - openssl: Guard against OOM on context creation
+  - openssl: Use OPENSSL_init_ssl() with ≥ 1.1.0
+  - os400: Sync libcurl API options
+  - packages/OS400: Make the source code-style compliant
+  - quiche: Close the connection
+  - quiche: Remove 'static' from local buffer
+  - range.d: Clarify that curl will not parse multipart responses
+  - range.d: Fix typo
+  - Revert "multi: implement wait using winsock events"
+  - rtsp: Error out on empty Session ID, unified the code
+  - rtsp: Fixed Session ID comparison to refuse prefix
+  - rtsp: Fixed the RTST Session ID mismatch in test 570
+  - runtests: Return error if no tests ran
+  - runtests: Revert the mistaken edit of $CURL
+  - runtests: Show keywords when no tests ran
+  - scripts/completion.pl: Parse all opts
+  - socks: Check for DNS entries with the right port number
+  - src/tool_filetime: Disable -Wformat on mingw for this file
+  - strerror: Use 'const' as the string should never be modified
+  - test122[12]: Remove these two tests
+  - test506: Make it not run in c-ares builds
+  - tests/*server.py: Close log file after each log line
+  - tests/server/tftpd.c: Close upload file right after transfer
+  - tests/util.py: Fix compatibility with Python 2
+  - tests: Add missing global_init/cleanup calls
+  - tests: Fix some http/2 tests for older versions of nghttpx
+  - tool_debug_cb: Do not assume zero-terminated data
+  - tool_help: Make "output" description less confusing
+  - tool_operate: --retry for HTTP 408 responses too
+  - tool_operate: Bail out properly on errors during parallel transfers
+  - tool_operate: Fix compiler warning when --libcurl is disabled
+  - tool_writeout: Use off_t getinfo-types instead of doubles
+  - travis: Use ninja-build for CMake builds
+  - travis: Use valgrind when running tests for debug builds
+  - urlapi: Don't accept blank port number field without scheme
+  - urlapi: URL encode a '+' in the query part
+  - urldata: Remove 'void *protop' and create the union 'p'
+  - vquic/ngtcp2.h: Define local_addr as sockaddr_storage
+- Upstream URLs moved from curl.haxx.se to curl.se
+
+* Wed Oct 14 2020 Paul Howarth <paul@city-fan.org> - 7.73.0-2.0.cf
+- Prevent upstream test 1451 from being skipped
+
+* Wed Oct 14 2020 Paul Howarth <paul@city-fan.org> - 7.73.0-1.0.cf
+- Update to 7.73.0
+  - curl: Add --output-dir
+  - curl: Support XDG_CONFIG_HOME to find .curlrc
+  - curl: Update --help with categories
+  - curl_easy_option_*: New API for meta-data about easy options
+  - CURLE_PROXY: New error code
+  - mqtt: Enable by default
+  - sftp: Add new quote commands 'atime' and 'mtime'
+  - ssh: Add the option CURLKHSTAT_FINE_REPLACE
+  - tls: Add CURLOPT_SSL_EC_CURVES and --curves
+  - altsvc: Clone setting in curl_easy_duphandle
+  - base64: Also build for smtp, pop3 and imap
+  - BUGS: Convert document to markdown
+  - build-wolfssl: Fix build with Visual Studio 2019
+  - buildconf: Invoke 'autoreconf -fi' instead
+  - checksrc: Detect // comments on column 0
+  - checksrc: Verify do-while and spaces between the braces
+  - checksrc: Warn on space after exclamation mark
+  - CI/azure: Disable test 571 in the msys2 builds
+  - CI/azure: MQTT is now enabled by default
+  - CI/azure: No longer ignore results of test 1013
+  - CI/tests: Fix invocation of tests for CMake builds
+  - CI/travis: Add a CI job with openssl3 (from git master)
+  - Clean-ups: Avoid curl_ on local variables
+  - CMake: Add option to enable Unicode on Windows
+  - CMake: Make HTTP_ONLY also disable MQTT
+  - CMake: Remove explicit 'CMAKE_ANSI_CFLAGS'
+  - CMake: Remove scary warning
+  - cmdline-opts/gen.pl: Generate nicer "See Also" in curl.1
+  - configure: Don't say HTTPS-proxy is enabled when disabled
+  - configure: Fix pkg-config detecting wolfssl
+  - configure: Let --enable-debug set -Wenum-conversion with gcc ≥ 10
+  - conn: Check for connection being dead before reuse
+  - connect.c: Remove superfluous 'else' in Curl_getconnectinfo
+  - curl.1: Add see also no-progress-meter on two spots
+  - curl.1: Fix typo invokved → invoked
+  - curl: In retry output don't call all problems "transient"
+  - curl: Make --libcurl show binary posts correctly
+  - curl: Make checkpasswd use dynbuf
+  - curl: Make file2memory use dynbuf
+  - curl: Make file2string use dynbuf
+  - curl: Make glob_match_url use dynbuf
+  - curl: Make sure setopt CURLOPT_IPRESOLVE passes on a long
+  - curl: Retry delays in parallel mode no longer sleeps blocking
+  - curl: Use curlx_dynbuf for realloc when loading config files
+  - curl: parallel_transfers: Make sure retry readds the transfer
+  - curl_get_line: Build only if cookies or alt-svc are enabled
+  - curl_mime_headers.3: Fix the example's use of curl_slist_append
+  - Curl_pgrsTime: Return new time to avoid timeout integer overflow
+  - Curl_send: Return error when pre_receive_plain can't malloc
+  - dist: Add missing CMake Find modules to the distribution
+  - docs/LICENSE-MIXING: Remove
+  - docs/opts: Fix typos in two manual pages
+  - docs/RESOURCES: Remove
+  - docs/TheArtOfHttpScripting: Convert to markdown
+  - docs: Add description about CI platforms to CONTRIBUTE.md
+  - docs: Correct non-existing macros in man pages
+  - doh: Add error message for DOH_DNS_NAME_TOO_LONG
+  - dynbuf: Make sure Curl_dyn_tail() zero terminates
+  - easy_reset: Clear retry counter
+  - easygetopt: Pass a valid enum to avoid compiler warning
+  - etag: Save and use the full received contents
+  - ftp: A 550 response to SIZE returns CURLE_REMOTE_FILE_NOT_FOUND
+  - ftp: Avoid risk of reading uninitialized integers
+  - ftp: Get rid of the PPSENDF macro
+  - ftp: Make a 552 response return CURLE_REMOTE_DISK_FULL
+  - ftp: Separate FTPS from FTP over "HTTPS proxy"
+  - git: Ignore libtests in 3XXX area
+  - github: Use new issue template feature
+  - HISTORY: Mention alt-svc added in 2019
+  - HTTP/3: Update to OpenSSL_1_1_1g-quic-draft-29
+  - http: Consolidate nghttp2_session_mem_recv() call paths
+  - http_proxy: Do not count proxy headers in the header bytecount
+  - http_proxy: Do not crash with HTTPS_PROXY and NO_PROXY set
+  - imap: Make imap_send use dynbuf for the send buffer management
+  - imap: Set cselect_bits to CURL_CSELECT_IN initially
+  - ldap: Reduce the amount of #ifdefs needed
+  - lib/Makefile.am: Bump VERSIONINFO due to new functions
+  - lib1560: Verify "redirect" to double-slash leading URL
+  - lib583: Fix enum mixup
+  - lib: Fix -Wassign-enum warnings
+  - lib: Make Curl_gethostname accept a const pointer
+  - libssh2: Handle the SSH protocols done over HTTPS proxy
+  - libssh2: Pass on the error from ssh_force_knownhost_key_type
+  - Makefile.m32: Add ability to override zstd libs
+  - man pages: Switch to https://example.com URLs
+  - MANUAL: Update examples to resolve without redirects
+  - mbedtls: Add missing header when defining MBEDTLS_DEBUG
+  - memdebug: Remove 9 year old unused debug function
+  - multi: Expand pre-check for socket readiness
+  - multi: Handle connection state winsock events
+  - multi: Implement wait using winsock events
+  - ngtcp2: Adapt to new NGTCP2_PROTO_VER_MAX define
+  - ngtcp2: Adapt to the new pkt_info arguments
+  - ntlm: Fix condition for curl_ntlm_core usage
+  - openssl: Avoid error conditions when importing native CA
+  - openssl: Consider ALERT_CERTIFICATE_EXPIRED a failed verification
+  - openssl: Fix wincrypt symbols conflict with BoringSSL
+  - parsedate: Tune the date to epoch conversion
+  - pause: Only trigger a reread if the unpause sticks
+  - pingpong: Use a dynbuf for the *_pp_sendf() function
+  - READMEs: Convert several to markdown
+  - runtests: Add %%repeat[]%% for test files
+  - runtests: Allow creating files without newlines
+  - runtests: Allow generating a binary sequence from hex
+  - runtests: Clear pid variables when failing to start a server
+  - runtests: Make cleardir() erase dot files too
+  - runtests: Provide curl's version string as %%VERSION for tests
+  - schannel: Fix memory leak when using get_cert_location
+  - schannel: Return CURLE_PEER_FAILED_VERIFICATION for untrusted root
+  - scripts: Improve the "get latest curl release tag" logic
+  - sectransp: Make it build with --disable-proxy
+  - select.h: Make socket validation macros test for INVALID_SOCKET
+  - select: Align poll emulation to return all relevant events
+  - select: Fix poll-based check not detecting connect failure
+  - select: Reduce duplication of Curl_poll in Curl_socket_check
+  - select: Simplify return code handling for poll and select
+  - setopt: If the buffer exists, refuse the new BUFFERSIZE
+  - setopt: Return CURLE_BAD_FUNCTION_ARGUMENT on bad argument
+  - socketpair: Allow CURL_DISABLE_SOCKETPAIR
+  - sockfilt: Handle FD_CLOSE winsock event on write socket
+  - src: Spell whitespace without whitespace
+  - SSLCERTS: Fix English syntax
+  - strerror: Honour Unicode API choice on Windows
+  - symbian: Drop support
+  - telnet.c: Depend on static requirement of WinSock version 2
+  - test1541: Remove since it is a known bug
+  - test163[12]: Require http to be built-in to run
+  - test434: Test -K use in a single line without newline
+  - test971: Show test mismatches "inline"
+  - tests/data: Fix some mismatched XML tags in test cases
+  - tests/FILEFORMAT: Document nonewline support for <file>
+  - tests/FILEFORMAT: Document type=shell for <command>
+  - tests/server/util.c: Fix support for Windows Unicode builds
+  - tests: Remove pipelining tests
+  - tls: Fix SRP detection by using the proper #ifdefs
+  - tls: Provide the CApath verbose log on its own line
+  - tool_setopt: Escape binary data to hex, not octal
+  - tool_writeout: Add new writeout variable, %%{num_headers}
+  - travis: Add a build using libressl (from git master)
+  - url: Use blank credentials when using proxy w/o username and password
+  - urlapi: Use more Curl_safefree
+  - vtls: Deduplicate client certificates in ssl_config_data
+  - win32: Drop support for WinSock version 1, require version 2
+  - winbuild: Convert the instruction text to README.md
+- Disable test 320 on EL-8 build as it is hanging, plus tests 321 and 322,
+  which fail (all related to TLS-SRP)
+
+* Thu Sep 10 2020 Jinoh Kang <aurhb20@protonmail.ch> - 7.72.0-2.0.cf
+- Fix multiarch conflicts in libcurl-minimal (#1877671)
+
+* Wed Aug 19 2020 Paul Howarth <paul@city-fan.org> - 7.72.0-1.0.cf
+- Update to 7.72.0
+  - content_encoding: Add zstd decoding support
+  - CURL_PUSH_ERROROUT: Allow the push callback to fail the parent stream
+  - CURLINFO_EFFECTIVE_METHOD: Added
+  - CVE-2020-8231: libcurl: Wrong connect-only connection
+  - appveyor: Collect libcurl.dll variants with prefix or suffix
+  - asyn-ares: Correct some bad comments
+  - bearssl: Fix build with disabled proxy support
+  - buildconf: Avoid array concatenation in die()
+  - buildconf: Retire ares buildconf invocation
+  - checksrc: Ban gmtime/localtime
+  - checksrc: Invoke script with -D to find .checksrc proper
+  - CI/azure: Install libssh2 for use with msys2-based builds
+  - CI/azure: Unconditionally enable warnings-as-errors with autotools
+  - CI/macos: Enable warnings as errors for CMake builds
+  - CI/macos: Set minimum macOS version
+  - CI/macos: Unconditionally enable warnings-as-errors with autotools
+  - CI: Add muse CI analyzer
+  - cirrus-ci: Upgrade 11-STABLE to 11.4
+  - CMake: Don't complain about missing nroff
+  - CMake: Fix test for warning suppressions
+  - cmake: Fix Windows XP build
+  - configure.ac: Sort features name in summary
+  - configure: Allow disabling warnings
+  - configure: Clean up wolfssl + pkg-config conflicts when cross-compiling
+  - configure: Show zstd "no" in summary when built without it
+  - connect: Remove redundant message about connect failure
+  - curl-config: Ignore REQUIRE_LIB_DEPS in --libs output
+  - curl.1: Add a few missing valid exit codes
+  - curl: Add %%{method} to the -w variables
+  - curl: Improve the existing file check with -J
+  - curl_multi_setopt: Fix compiler warning "result is always false"
+  - curl_version_info.3: CURL_VERSION_KERBEROS4 is deprecated
+  - CURLINFO_CERTINFO.3: Fix typo
+  - CURLOPT_NOBODY.3: Clarify what setting to 0 means
+  - docs: Add date of 7.20 to CURLM_CALL_MULTI_PERFORM mentions
+  - docs: Add video link to docs/CONTRIBUTE.md
+  - docs: Change "web site" to "website"
+  - docs: Clarify MAX_SEND/RECV_SPEED functionality
+  - docs: Update a few leftover mentions of DarwinSSL
+  - doh: Remove redundant cast
+  - file2memory: Use a define instead of -1 unsigned value
+  - ftp: Don't do ssl_shutdown instead of ssl_close
+  - ftpserver: Don't verify SMTP MAIL FROM names
+  - getinfo: Reset retry-after value in initinfo
+  - gnutls: Repair the build with 'CURL_DISABLE_PROXY'
+  - gtls: Survive not being able to get name/issuer
+  - h2: Repair trailer handling
+  - http2: Close the http2 connection when no more requests may be sent
+  - http2: Fix nghttp2_strerror → nghttp2_http2_strerror in debug messages
+  - libssh2: s/ssherr/sftperr/
+  - libtest/Makefile.am: Add -no-undefined for libstubgss for Cygwin
+  - md(4|5): Don't use deprecated macOS functions
+  - mprintf: Fix dollar string handling
+  - mprintf: Fix stack overflows
+  - multi: Condition 'extrawait' is always true
+  - multi: Remove 10-year old commented-out code
+  - multi: Remove two checks always true
+  - multi: Update comment to say easyp list is linear
+  - multi_remove_handle: Close unused connect-only connections
+  - ngtcp2: Adapt to error code rename
+  - ngtcp2: Adjust to recent sockaddr updates
+  - ngtcp2: Update to modified qlog callback prototype
+  - nss: Fix build with disabled proxy support
+  - ntlm: free target_info before (re-)malloc
+  - openssl: Fix build with LibreSSL < 2.9.1
+  - page-header: Provide protocol details in the curl.1 man page
+  - quiche: Handle calling disconnect twice
+  - runtests.pl: Treat LibreSSL and BoringSSL as OpenSSL
+  - runtests: Move the gnutls-serv tests to a dynamic port
+  - runtests: Move the smbserver to use a dynamic port number
+  - runtests: Move the TELNET server to a dynamic port
+  - runtests: Run the DICT server on a random port number
+  - runtests: Run the http2 tests on a random port number
+  - runtests: Support dynamically base64 encoded sections in tests
+  - setopt: Unset NOBODY switches to GET if still HEAD
+  - smtp_parse_address: Handle blank input string properly
+  - socks: Use size_t for size variable
+  - strdup: Remove the odd strlen check
+  - test1119: Verify stdout in the test
+  - test1139: Make it display the difference on test failures
+  - test1140: Compare stdout
+  - test1908: Treat file as text
+  - tests/FILEFORMAT.md: Mention %%HTTP2PORT
+  - tests/sshserver.pl: Fix compatibility with OpenSSH for Windows
+  - TLS naming: Fix more Winssl and Darwinssl leftovers
+  - tls-max.d: This option is only for TLS-using connections
+  - tlsv1.3.d. Only for TLS-using connections
+  - tool_doswin: Simplify Windows version detection
+  - tool_getparam: Make --krb option work again
+  - TrackMemory tests: Ignore realloc and free in getenv.c
+  - transfer: Fix data_pending for builds with both h2 and h3 enabled
+  - transfer: Fix memory-leak with CURLOPT_CURLU in a duped handle
+  - transfer: Move retrycount from connect struct to easy handle
+  - travis/script.sh: Fix use of '-n' with unquoted envvar
+  - travis: Add ppc64le and s390x builds
+  - travis: Update quiche builds for new boringssl layout
+  - url: Fix CURLU and location following
+  - url: Silence MSVC warning
+  - util: Silence conversion warnings
+  - win32: Add Curl_verify_windows_version() to curlx
+  - WIN32: Stop forcing narrow-character API
+  - Windows: Add unicode to feature list
+  - Windows: Disable Unix Sockets for old mingw
+
+* Thu Aug  6 2020 Paul Howarth <paul@city-fan.org> - 7.71.1-5.0.cf
+- setopt: Unset NOBODY switches to GET if still HEAD
+
+* Mon Jul 27 2020 Paul Howarth <paul@city-fan.org> - 7.71.1-4.0.cf
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
+
+* Thu Jul 23 2020 Paul Howarth <paul@city-fan.org> - 7.71.1-3.0.cf
+- Modernize spec using %%{make_build} and %%{make_install}
+
+* Fri Jul  3 2020 Paul Howarth <paul@city-fan.org> - 7.71.1-2.0.cf
+- curl: Make the --krb option work again (#1833193)
+
+* Wed Jul  1 2020 Paul Howarth <paul@city-fan.org> - 7.71.1-1.0.cf
+- Update to 7.71.1
+  - cirrus-ci: Disable FreeBSD 13 (again)
+  - Curl_inet_ntop: Always check the return code
+  - CURLOPT_READFUNCTION.3: Provide the upload data size up front
+  - DYNBUF.md: Fix a typo: trail => tail
+  - escape: Make the URL decode able to reject only %%00-bytes
+  - escape: Zero length input should return a zero length output
+  - examples/multithread.c: Call curl_global_cleanup()
+  - http2: Set the correct URL in pushed transfers
+  - http: Fix proxy auth with blank password
+  - mbedtls: Fix build with disabled proxy support
+  - ngtcp2: Sync with current master
+  - openssl: Fix compilation on Windows when ngtcp2 is enabled
+  - Revert "multi: implement wait using winsock events"
+  - sendf: Improve the message on client write errors
+  - terminology: Call them null-terminated strings
+  - tool_cb_hdr: Fix etag warning output and return code
+  - url: Allow user + password to contain "control codes" for HTTP(S)
+  - vtls: Compare cert blob when finding a connection to reuse
+- Run the test suite on Fedora 16 builds too, since builds on Fedora 13..15
+  now fail the test suite (possibly a c-ares memory clean-up issue?)
+
+* Wed Jun 24 2020 Paul Howarth <paul@city-fan.org> - 7.71.0-1.0.cf
+- Update to 7.71.0
+  - CURLOPT_SSL_OPTIONS: Optional use of Windows' CA store (with openssl)
+  - setopt: Add CURLOPT_PROXY_ISSUERCERT(_BLOB) for coherency
+  - setopt: Support certificate options in memory with struct curl_blob
+  - tool: Add option --retry-all-errors to retry on any error
+  - CVE-2020-8177: curl overwrite local file with -J
+  - CVE-2020-8169: Partial password leak over DNS on HTTP redirect
+  - *_sspi: Fix bad uses of CURLE_NOT_BUILT_IN
+  - all: Fix codespell errors
+  - altsvc: Bump to h3-29
+  - altsvc: Fix 'dsthost' may be used uninitialized in this function
+  - altsvc: Fix parser for lines ending with CRLF
+  - altsvc: Remove the num field from the altsvc struct
+  - appveyor: Add non-debug plain autotools-based build
+  - appveyor: Disable flaky test 1501 and ignore broken 1056
+  - appveyor: Disable test 1139 instead of ignoring it
+  - asyn-*: Remove support for never-used NULL entry pointers
+  - azure: Use matrix strategy to avoid configuration redundancy
+  - build: Disable more code/data when built without proxy support
+  - buildconf: Remove -print from the find command that removes files
+  - checksrc: Enhance the ASTERISKSPACE and update code accordingly
+  - CI/macos: Fix 'is already installed' errors by using bundle
+  - cirrus: Disable SFTP and SCP tests
+  - CMake: Add ENABLE_ALT_SVC option
+  - CMake: Add HTTP/3 support (ngtcp2+nghttp3, quiche)
+  - CMake: Add libssh build support
+  - CMake: Do not build test programs by default
+  - CMake: Fix runtests.pl with CMake, add new test targets
+  - CMake: Ignore INTERFACE_LIBRARY targets for pkg-config file
+  - CMake: Rebuild Makefile.inc.cmake when Makefile.inc changes
+  - CODE_REVIEW.md: how to do code reviews in curl
+  - configure: Fix pthread check with static boringssl
+  - configure: For wolfSSL, check for the DES func needed for NTLM
+  - configure: Only strip first -L from LDFLAGS
+  - configure: Repair the check if argv can be written to
+  - configure: The wolfssh backend does not provide SCP
+  - connect: Improve happy eyeballs handling
+  - connect: Make happy eyeballs work for QUIC (again)
+  - curl.1: Quote globbed URLs
+  - curl: Remove -J "informational" written on stdout
+  - Curl_addrinfo: Use one malloc instead of three
+  - CURLINFO_ACTIVESOCKET.3: Clarify the description
+  - doc: Add missing closing parenthesis in CURLINFO_SSL_VERIFYRESULT.3
+  - doc: Rename VERSIONS to VERSIONS.md as it already has Markdown syntax
+  - docs/HTTP3: Add qlog to the quiche build instruction
+  - docs/options-in-versions: Which version added each cmdline option
+  - docs: Unify protocol lists
+  - dynbuf: Introduce internal generic dynamic buffer functions
+  - easy: Fix dangling pointer on easy_perform fail
+  - examples/ephiperfifo: Turn off interval when setting timerfd
+  - examples/http2-down/upload: Add error checks
+  - examples: Remove asiohiper.cpp
+  - FILEFORMAT: Add more features that tests can depend on
+  - FILEFORMAT: Describe verify/stderr
+  - ftp: Make domore_getsock() return the secondary socket properly
+  - ftp: Mark return-ignoring calls to Curl_GetFTPResponse with (void)
+  - ftp: Shut down the secondary connection properly when SSL is used
+  - GnuTLS: Backend support for CURLINFO_SSL_VERIFYRESULT
+  - hostip: Make Curl_printable_address not return anything
+  - hostip: On macOS avoid DoH when given a numerical IP address
+  - http2: Keep trying to send pending frames after req.upload_done
+  - http2: Simplify and clean up trailer handling
+  - HTTP3.md: Clarify cargo build directory
+  - http: Move header storage to Curl_easy from connectdata
+  - libcurl.pc: Merge Libs.private into Libs for static-only builds
+  - libssh2: Improved error output for wrong quote syntax
+  - libssh2: Keep sftp errors as 'unsigned long'
+  - libssh2: Set the expected total size in SCP upload init
+  - libtest/cmake: Remove commented code
+  - list-only.d: This option existed already in 4.0
+  - manpage: Add three missing environment variables
+  - multi: Add defensive check on data->multi->num_alive
+  - multi: Implement wait using winsock events
+  - ngtcp2: Clean up memory when failing to connect
+  - ngtcp2: Fix build with current ngtcp2 master implementing draft 28
+  - ngtcp2: Fix happy eyeballs quic connect crash
+  - ngtcp2: Introduce qlog support
+  - ngtcp2: Never call fprintf() in lib code in release version
+  - ngtcp2: Update with recent API changes
+  - ntlm: Enable NTLM support with wolfSSL
+  - OpenSSL: Have CURLOPT_CRLFILE imply CURLSSLOPT_NO_PARTIALCHAIN
+  - openssl: Set FLAG_TRUSTED_FIRST unconditionally
+  - projects: Add crypt32.lib to dependencies for all OpenSSL configs
+  - quiche: Clean up memory properly when failing to connect
+  - quiche: Enable qlog output
+  - quiche: Update SSLKEYLOGFILE support
+  - Revert "buildconf: use find -execdir"
+  - Revert "ssh: ignore timeouts during disconnect"
+  - runtests: Remove sleep calls
+  - runtests: Show elapsed test time with higher precision (ms)
+  - select: Always use Sleep in Curl_wait_ms on Win32
+  - select: Fix overflow protection in Curl_socket_check
+  - sendf: Make failf() use the mvsnprintf() return code
+  - server/sws: Fix asan warning on use of uninitialized variable
+  - server/util: Fix logmsg format using curl_off_t argument
+  - sha256: Fixed potentially uninitialized variable
+  - share: Don't set the share flag if something fails
+  - sockfilt: Make select_ws stop waiting on exit signal event
+  - socks: Detect connection close during handshake
+  - socks: Fix expected length of SOCKS5 reply
+  - socks: Remove unreachable breaks in socks.c and mime.c
+  - source clean-up: Remove all custom typedef structs
+  - test1167: Fixes in badsymbols.pl
+  - test1177: Look for curl.h in source directory
+  - test1238: Avoid tftpd being busy for tests shortly following
+  - test613.pl: Make tests 613 and 614 work with OpenSSH for Windows
+  - test75: Remove precheck test
+  - tests: Add https-proxy support to the test suite
+  - tests: Add support for SSH server variant specific transfer paths
+  - tests: Add two simple tests for --login-options
+  - tests: Make test 1248 + 1249 use %%NOLISTENPORT
+  - tests: Pick a random port number for SSH
+  - tests: Run stunnel for HTTPS and FTPS on dynamic ports
+  - timeouts: Change millisecond timeouts to timediff_t from time_t
+  - timeouts: Move ms timeouts to timediff_t from int and long
+  - tool: Fix up a few --help descriptions
+  - tool: Support UTF-16 command line on Windows
+  - tool_cfgable: free login_options at exit
+  - tool_getparam: Fix memory leak in parse_args
+  - tool_operate: Fixed potentially uninitialized variables
+  - tool_paramhlp: Fixed potentially uninitialized strtol() variable
+  - transfer: Close connection after excess data has been read
+  - travis: Add "qlog" as feature in the quiche build
+  - travis: Add ngtcp2 and quiche tests for CMake
+  - travis: Upgrade to bionic, clang-9, improve readability
+  - typecheck-gcc.h: CURLINFO_PRIVATE does not need a 'char *'
+  - unit1604.c: Fix implicit conv from 'SANITIZEcode' to 'CURLcode'
+  - url: Accept "any length" credentials for proxy auth
+  - url: alloc the download buffer at transfer start
+  - url: Reject too long input when parsing credentials
+  - url: Sort the protocol schemes in rough popularity order
+  - urlapi: Accept :: as a valid IPv6 address
+  - urldata: Leave the HTTP method untouched in the set.* struct
+  - urlglob: Treat literal IPv6 addresses with zone IDs as a host name
+  - user-agent.d: Spell out what happens given a blank argument
+  - vauth/cleartext: Fix theoretical integer overflow
+  - version.d: Expanded and alpha-sorted
+  - vtls: Extract and simplify key log file handling from OpenSSL
+  - wolfssl: Add SSLKEYLOGFILE support
+  - wording: Avoid blacklist/whitelist stereotypes
+  - write-out.d: Added "response_code"
+
+* Wed Apr 29 2020 Paul Howarth <paul@city-fan.org> - 7.70.0-1.0.cf
+- Update to 7.70.0
+  - curl: Add --ssl-revoke-best-effort to allow a "best effort" revocation check
+  - mqtt: Add new experimental protocol
+  - schannel: Add "best effort" revocation check option:
+    CURLSSLOPT_REVOKE_BEST_EFFORT
+  - writeout: Support to generate JSON output with '%%{json}'
+  - appveyor: Add Unicode winbuild jobs
+  - appveyor: Completely disable tests that fail to timeout early
+  - appveyor: Show failed tests in log even if test is ignored
+  - appveyor: Sort builds by type and add two new variants
+  - appveyor: Turn disabled tests into ignored result tests
+  - appveyor: Use random test server ports based upon APPVEYOR_API_URL
+  - build: Fixed build for systems with select() in unistd.h
+  - buildconf: Avoid using tempfile when removing files
+  - checksrc: Warn on obvious conditional blocks on the same line as if()
+  - CI-fuzz: Increase fuzz time to 40 minutes
+  - ci/tests: Fix Azure Pipelines not running Windows containers
+  - CI: Add build with ngtcp2 + gnutls on Travis CI
+  - CI: Bring GitHub Actions fuzzing job in line with macOS jobs
+  - CI: Migrate macOS jobs from Azure and Travis CI to GitHub Actions
+  - CI: Remove default Ubuntu build from GitHub Actions
+  - cirrus: No longer ignore test 504, which is working again
+  - cirrus: Re-enable the FreeBSD 13 CI builds
+  - clean-up: Insert newline after if() conditions
+  - cmake: Add aliases so exported target names are available in tree
+  - cmake: Add CMAKE_MSVC_RUNTIME_LIBRARY
+  - cmake: Add support for building with wolfSSL
+  - cmake: Avoid MSVC C4273 warnings in send/recv checks
+  - cmdline: Fix handling of OperationConfig linked list (--next)
+  - compressed.d: Stress that the headers are not modified
+  - config: Remove all defines of HAVE_DES_H
+  - configure: Convert -I to -isystem as a last step
+  - configure: Document 'compiler_num' for gcc
+  - configure: Don't check for Security.framework when cross-compiling
+  - configure: Fix -pedantic-errors for GCC 5 and later
+  - configure: Remove use of -vec-report0 from CFLAGS with icc
+  - connect: Happy eyeballs clean-up
+  - connect: Store connection info for QUIC connections
+  - copyright: Fix out-of-date copyright ranges and missing headers
+  - curl-functions.m4: Remove inappropriate AC_REQUIRE
+  - curl.h: Remove CURL_VERSION_ESNI, never supported nor documented
+  - curl.h: Update comment typo
+  - curl: Allow both --etag-compare and --etag-save with same file name
+  - curl_setup: Define _WIN32_WINNT_[OS] symbols
+  - CURLINFO_CONDITION_UNMET: Return true for 304 http status code
+  - CURLINFO_NUM_CONNECTS: Improve accuracy
+  - CURLOPT_WRITEFUNCTION.3: Add inline example and new see-also
+  - dist: Add mail-rcpt-allowfails.d to the tarball
+  - docs/make: Generate curl.1 from listed files only
+  - docs: Add warnings about FILE: URLs on Windows
+  - easy: Fix curl_easy_duphandle for builds missing IPv6 that use c-ares
+  - examples/sessioninfo.c: Add include to fix compiler warning
+  - GitHub Actions: Run when pushed to master or */ci + PRs
+  - gnutls: Bump lowest supported version to 3.1.10
+  - gnutls: Don't skip really long certificate fields
+  - gnutls: Ensure TLS 1.3 when SRP isn't requested
+  - gopher: Check remaining time left during write busy loop
+  - gskit: Use our internal select wrapper for portability
+  - http2: Fix erroneous debug message that h2 connection closed
+  - http: Don't consider upload done if the request isn't completely sent off
+  - http: Free memory when Alt-Used header creation fails due to OOM
+  - lib/mk-ca-bundle: Skip empty certs
+  - lib670: Use the same Win32 API check as all other lib tests
+  - lib: Fix typos in comments and error messages
+  - lib: Never define CURL_CA_BUNDLE with a getenv
+  - libcurl-multi.3: Added missing full stop
+  - libssh: Avoid options override by configuration files
+  - libssh: Use new ECDSA key types to check known hosts
+  - mailmap: Fix up a few author names/fields
+  - Makefile.m32: Improve windres parameter compatibility
+  - Makefile: Run the cd commands in a subshell
+  - memdebug: Don't log free(NULL)
+  - mime: Properly check Content-Type even if it has parameters
+  - multi-ssl: Reset the SSL backend on 'Curl_global_cleanup()'
+  - multi: Improve parameter check for curl_multi_remove_handle
+  - nghttp2: 1.12.0 required
+  - ngtcp2: Update to git master for the key installation API change
+  - nss: Check for PK11_CreateDigestContext() returning NULL
+  - openssl: Adapt to functions marked as deprecated since version 3
+  - OS400: Update strings for ccsid-ifier (fixes the build)
+  - output.d: Quote the URL when globbing
+  - packages: Add OS400/chkstrings.c to the dist
+  - RELEASE-PROCEDURE.md: Run the copyright.pl script!
+  - Revert "file: on Windows, refuse paths that start with \\"
+  - runtests: Always put test number in servercmd file
+  - runtests: Provide nicer error message when protocol "dump" file is empty
+  - schannel: Fix blocking timeout logic
+  - schannel: support .P12 or .PFX client certificates
+  - scripts/release-notes.pl: Add helper script for RELEASE-NOTES maintenance
+  - select: Make Curl_socket_check take timediff_t timeout
+  - select: Move duplicate select preparation code into Curl_select
+  - select: Remove typecast from SOCKET_WRITABLE/READABLE macros
+  - server/getpart: Make the "XML-parser" stricter
+  - server/resolve: Remove AI_CANONNAME to make macos tell the truth
+  - smtp: Set auth correctly
+  - sockfilt: Add logmsg output to select_ws_wait_thread on Windows
+  - sockfilt: Fix broken pipe on Windows to be ready in select_ws
+  - sockfilt: Fix handling of ready closed sockets on Windows
+  - sockfilt: Fix race-condition of waiting threads and event handling
+  - socks: Fix blocking timeout logic
+  - src: Remove C99 constructs to ensure C89 compliance
+  - SSLCERTS.md: Fix example code for setting CA cert file
+  - test1148: Tolerate progress updates better (again)
+  - test1154: Set a proper name
+  - test1177: Verify that all the CURL_VERSION_ bits are documented
+  - test1566: Verify --etag-compare that gets a 304 back
+  - test1908: Avoid using fixed port number in test data
+  - test2043: Use revoked.badssl.com instead of revoked.grc.com
+  - test2100: Fix static port instead of dynamic value being used
+  - tests/data: Fix some XML formatting issues in test cases
+  - tests/FILEFORMAT: Converted to markdown and extended
+  - tests/server/util.c: Use curl_off_t instead of long for pid
+  - tests: Add %%NOLISTENPORT and use it
+  - tests: Add Windows compatible pidwait like pidkill and pidterm
+  - tests: Fix conflict between Cygwin/msys and Windows PIDs
+  - tests: Introduce preprocessed test cases
+  - tests: Make Python-based servers compatible with Python 2 and 3
+  - tests: Make runtests check that disabled tests exists
+  - tests: Move pingpong server to dynamic listening port
+  - tests: Remove python_dependencies for smbserver from our tree
+  - tests: Run the RTSP test server on a dynamic port number
+  - tests: Run the SOCKS test server on a dynamic port number
+  - tests: Run the sws server on "any port"
+  - tests: Run the TFTP test server on a dynamic port number
+  - tests: Use Cygwin/msys PIDs for stunnel and sshd on Windows
+  - tls: Remove the BACKEND define kludge from most backends
+  - tool: Do not declare functions with Curl_ prefix
+  - tool_operate: Fix add_parallel_transfers when more are in queue
+  - transfer: Cap retries of "dead connections" to 5
+  - transfer: Switch PUT to GET/HEAD on 303 redirect
+  - travis: Bump the wolfssl CI build to use 4.4.0
+  - travis: Update the ngtcp2 build to use the latest OpenSSL patch
+  - url: Allow non-HTTPS altsvc-matching for debug builds
+  - version: Add 'cainfo' and 'capath' to version info struct
+  - version: Increase buffer space for ssl version output
+  - version: Skip idn2_check_version() check and add precaution
+  - vquic: Add support for GnuTLS backend of ngtcp2
+  - vtls: Fix ssl_config memory-leak on out-of-memory
+  - warnless: Remove code block for icc that didn't work
+  - Windows: Enable UnixSockets with all build toolchains
+  - Windows: Suppress UI in all CryptAcquireContext() calls
+- Add patch to fix test suite when run from separate build directory
+  (https://github.com/curl/curl/pull/5310)
+
+* Mon Apr 20 2020 Paul Howarth <paul@city-fan.org> - 7.69.1-3.0.cf
+- SSH: Use new ECDSA key types to check known hosts (#1824926)
+
+* Fri Apr 17 2020 Paul Howarth <paul@city-fan.org> - 7.69.1-2.0.cf
+- Prevent discarding of -g when compiling with clang
+
+* Wed Mar 11 2020 Paul Howarth <paul@city-fan.org> - 7.69.1-1.1.cf
+- Add new tests 664, 665, and 1459 to list of tests to skip for builds on
+  Fedora 12-15
+
+* Wed Mar 11 2020 Paul Howarth <paul@city-fan.org> - 7.69.1-1.0.cf
+- Update to 7.69.1
+  - ares: Store dns parameters for duphandle
+  - cirrus-ci: Disable the FreeBSD 13 builds
+  - curl_share_setopt.3: Note sharing cookies doesn't enable the engine
+  - lib1564: Reduce number of mid-wait wakeup calls
+  - libssh: Fix matching user-specified MD5 hex key
+  - MANUAL: Update a dict-using command line
+  - mime: Do not perform more than one read in a row
+  - mime: Fix the binary encoder to handle large data properly
+  - mime: Latch last read callback status
+  - multi: Skip EINTR check on wakeup socket if it was closed
+  - pause: Bail out on bad input
+  - pause: Force a connection recheck after unpausing (take 2)
+  - pause: Return early for calls that don't change pause state
+  - runtests.1: Rephrase how to specify what tests to run
+  - runtests: Fix missing use of exe_ext helper function
+  - seek: Fix fall back for missing ftruncate on Windows
+  - sftp: Fix segfault regression introduced by #4747 in 7.69.0
+  - sha256: Added SecureTransport implementation
+  - sha256: Added WinCrypt implementation
+  - socks4: Fix host resolve regression
+  - socks5: Host name resolv regression fix
+  - tests/server: Fix missing use of exe_ext helper function
+  - tests: Fix static ip:port instead of dynamic values being used
+  - tests: Make sleeping portable by avoiding select
+  - unit1612: Fix the inclusion and compilation of the HMAC unit test
+  - urldata: Remove the 'stream_was_rewound' connectdata struct member
+  - version: Make curl_version* thread-safe without using global context
+
+* Mon Mar  9 2020 Paul Howarth <paul@city-fan.org> - 7.69.0-2.0.cf
+- Make Flatpak work again (#1810989)
+
+* Wed Mar  4 2020 Paul Howarth <paul@city-fan.org> - 7.69.0-1.0.cf
+- Update to 7.69.0
+  - polarssl: Removed
+  - smtp: Add CURLOPT_MAIL_RCPT_ALLLOWFAILS and --mail-rcpt-allowfails
+  - wolfSSH: New SSH backend
+  - altsvc: Improved header parser
+  - altsvc: Keep a copy of the file name to survive handle reset
+  - altsvc: Make saving the cache an atomic operation
+  - altsvc: Use h3-27
+  - azure: Disable brotli on the macos debug-builds
+  - build: Remove all HAVE_OPENSSL_ENGINE_H defines
+  - checksrc.bat: Fix not being able to run script from the main curl dir
+  - cleanup: Fix several comment typos
+  - cleanup: Fix typos and wording in docs and comments
+  - cmake: Add support for CMAKE_LTO option
+  - cmake: Clean up and improve build procedures
+  - cmake: Enable SMB for Windows builds
+  - cmake: Improve libssh2 check on Windows
+  - cmake: Show HTTPS-proxy in the features output
+  - cmake: Support specifying the target Windows version
+  - cmake: Use check_symbol_exists also for inet_pton
+  - configure.ac: Fix comments about --with-quiche
+  - configure: Disable metalink if mbedTLS is specified
+  - configure: Disable metalink support for incompatible SSL/TLS
+  - conn: Do not reuse connection if SOCKS proxy credentials differ
+  - conncache: Removed unused Curl_conncache_bundle_size()
+  - connect: Remove some spurious infof() calls
+  - connection reuse: Respect the max_concurrent_streams limits
+  - contributors: Also include people who contributed to curl-www
+  - contrithanks: Use the most recent tag by default
+  - cookie: Check __Secure- and __Host- case sensitively
+  - cookies: Make saving atomic with a rename
+  - create-dirs.d: Mention the mode
+  - curl: Avoid using strlen for testing if a string is empty
+  - curl: Error on --alt-svc use without support
+  - curl: Let -D merge headers in one file again
+  - curl: Make #0 not output the full URL
+  - curl: Make the -# spaceship bar not wrap the line
+  - curl: Remove 'config' field from OutStruct
+  - curl: progressbarinit: Ignore column width from terminals < 20
+  - curl_escape.3: Add a link to curl_free
+  - curl_getenv.3: Fix the memory handling description
+  - curl_global_init: Assume the EINTR bit by default
+  - curl_global_init: Move the IPv6 works status bool to multi handle
+  - CURLINFO_COOKIELIST.3: Fix example
+  - CURLOPT_ALTSVC_CTRL.3: Fix the DEFAULT wording
+  - CURLOPT_PROXY_SSL_OPTIONS.3: Sync with CURLOPT_SSL_OPTIONS.3
+  - CURLOPT_REDIR_PROTOCOLS.3: Update the DEFAULT section
+  - data.d: Remove "Multiple files can also be specified"
+  - digest: Do not quote algorithm in HTTP authorisation
+  - docs/HTTP3: Add --enable-alt-svc to curl's configure
+  - docs/HTTP3: Update the OpenSSL branch to use for ngtcp2
+  - docs: Fix typo on CURLINFO_RETRY_AFTER
+  - easy: Remove dead code
+  - form.d: Fix two minor typos
+  - ftp: Convert 'sock_accepted' to a plain boolean
+  - ftp: Remove superfluous checking for crlf in user or pwd
+  - ftp: Shrink temp buffers used for PORT
+  - github action: Add CIFuzz
+  - github: Instructions to post "uname -a" on Unix systems in issues
+  - GnuTLS: Always send client cert
+  - gtls: Fixed compilation when using GnuTLS < 3.5.0
+  - hostip: Move code to resolve IP address literals to 'Curl_resolv'
+  - HTTP-COOKIES: Describe the cookie file format
+  - HTTP-COOKIES: Mention that a trailing newline is required
+  - http2: Make pausing/unpausing set/clear local stream window
+  - http2: Now requires nghttp2 ≥ 1.12.0
+  - http: Added 417 response treatment
+  - http: Increase EXPECT_100_THRESHOLD to 1Mb
+  - http: Mark POSTs with no body as "upload done" from the start
+  - http: Move "oauth_bearer" from connectdata to Curl_easy
+  - include: Remove non-curl prefixed defines
+  - KNOWN_BUGS: Multiple methods in a single WWW-Authenticate: header
+  - libssh2: Add support for forcing a hostkey type
+  - libssh2: Fix variable type
+  - libssh: Improve known hosts handling
+  - llist: Removed unused Curl_llist_move()
+  - location.d: The method change is from POST to GET only
+  - md4: Fixed compilation issues when using GNU TLS gcrypt
+  - md4: Use init/update/final functions in Secure Transport
+  - md5: Added implementation for mbedTLS
+  - mk-ca-bundle: Add support for CKA_NSS_SERVER_DISTRUST_AFTER
+  - multi: Change curl_multi_wait/poll to error on negative timeout
+  - multi: Fix outdated comment
+  - multi: If Curl_readwrite sets 'comeback' use expire, not loop
+  - multi_done: If multiplexed, make conn->data point to another transfer
+  - multi_wait: Stop loop when sread() returns zero
+  - ngtcp2: Add error code for QUIC connection errors
+  - ngtcp2: Fixed to only use AF_INET6 when ENABLE_IPV6
+  - ngtcp2: Update to git master and its draft-25 support
+  - ntlm: Move the winbind data into the NTLM data structure
+  - ntlm: Pass the Curl_easy structure to the private winbind functions
+  - ntlm: Removed the dependency on the TLS libraries when using MD5
+  - ntlm_wb: Use Curl_socketpair() for greater portability
+  - oauth2-bearer.d: Works for HTTP too
+  - openssl: Make CURLINFO_CERTINFO not truncate x509v3 fields
+  - openssl: Remove redundant assignment
+  - os400: Fixed the build
+  - pause: Force-drain the transfer on unpause
+  - quiche: Update to draft-25
+  - README: Mention that the docs are in docs/
+  - RELEASE-PROCEDURE: Feature window is closed post-release a few days
+  - runtests: Make random seed fixed for a month
+  - runtests: Restore the command log
+  - schannel: Make CURLOPT_CAINFO work better on Windows 7
+  - schannel_verify: Fix alt names manual verify for UNICODE builds
+  - sha256: Use crypto implementations when available
+  - singleuse.pl: Support new API functions, fix curl_dbg_ handling
+  - smtp: Support the SMTPUTF8 extension
+  - smtp: Support UTF-8 based host names in MAIL FROM
+  - SOCKS: Make the connect phase non-blocking
+  - strcase: Turn Curl_raw_tolower into static
+  - strerror: Increase STRERROR_LEN 128 → 256
+  - test1323: Added missing 'unit test' feature requirement
+  - tests: Add a unit test for MD4 digest generation
+  - tests: Add a unit test for SHA256 digest generation
+  - tests: Add a unit test for the HMAC hash generation
+  - tests: Deduce the tool name from the test case for unit tests
+  - tests: Fix Python 3 compatibility of smbserver.py
+  - tool_dirhie: Allow directory traversal during creation
+  - tool_homedir: Change GetEnv() to use libcurl's curl_getenv()
+  - tool_util: Improve Windows version of tvnow()
+  - travis: Update non-OpenSSL Linux jobs to Bionic
+  - url: Include the failure reason when curl_win32_idn_to_ascii() fails
+  - urlapi: Guess scheme properly with credentials given
+  - urldata: Do string enums without #ifdefs for build scripts
+  - vtls: Refactor Curl_multissl_version to make the code clearer
+  - win32: USE_WIN32_CRYPTO to enable Win32 based MD4, MD5 and SHA256
+- Drop http2 support for EL-6, F-23 and F-24 (libnghttp2 too old)
+
+* Tue Jan 28 2020 Paul Howarth <paul@city-fan.org> - 7.68.0-2.0.cf
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_32_Mass_Rebuild
+
+* Wed Jan  8 2020 Paul Howarth <paul@city-fan.org> - 7.68.0-1.0.cf
+- Update to 7.68.0
+  - TLS: Add BearSSL vtls implementation
+  - XFERINFOFUNCTION: Support CURL_PROGRESSFUNC_CONTINUE
+  - curl: Add --etag-compare and --etag-save
+  - curl: Add --parallel-immediate
+  - multi: Add curl_multi_wakeup()
+  - openssl: CURLSSLOPT_NO_PARTIALCHAIN can disable partial cert chains
+  - CVE-2019-15601: file: on Windows, refuse paths that start with \\
+  - Azure Pipelines: Add several builds
+  - CMake: Add support for building with the NSS vtls backend
+  - CURL-DISABLE: Initial docs for the CURL_DISABLE_* defines
+  - CURLOPT_HEADERFUNCTION.3: Document that size is always 1
+  - CURLOPT_QUOTE.3: Fix typos
+  - CURLOPT_READFUNCTION.3: Fix the example
+  - CURLOPT_URL.3: "curl supports SMB version 1 (only)"
+  - CURLOPT_VERBOSE.3: See also ERRORBUFFER
+  - HISTORY: Added cmake, HTTP/3 and parallel downloads with curl
+  - HISTORY: The SMB(S) support landed in 2014
+  - INSTALL.md: Provide Android build instructions
+  - KNOWN_BUGS: Connection information when using TCP Fast Open
+  - KNOWN_BUGS: LDAP on Windows doesn't work correctly
+  - KNOWN_BUGS: TLS session cache doesn't work with TFO
+  - OPENSOCKETFUNCTION.3: Correct the purpose description
+  - TrackMemory tests: Always remove CR before LF
+  - altsvc: Bump to h3-24
+  - altsvc: Make the save function ignore NULL filenames
+  - build: Disable Visual Studio warning "conditional expression is constant"
+  - build: Fix for CURL_DISABLE_DOH
+  - checksrc.bat: Add a check for vquic and vssh directories
+  - checksrc: Repair the copyrightyear check
+  - cirrus-ci: Enable clang sanitizers on freebsd 13
+  - cirrus: Drop the FreeBSD 10.4 build
+  - config-win32: cpu-machine-OS for Windows on ARM
+  - configure: Avoid unportable '==' test(1) operator
+  - configure: Enable IPv6 support without 'getaddrinfo'
+  - configure: Fix typo in help text
+  - conncache: CONNECT_ONLY connections assumed always in-use
+  - conncache: Fix multi-thread use of shared connection cache
+  - copyrights: Fix copyright year range
+  - create_conn: Prefer multiplexing to using new connections
+  - curl -w: Handle a blank input file correctly
+  - curl.h: Add two missing defines for "pre ISO C" compilers
+  - curl/parseconfig: Fix mem-leak
+  - curl/parseconfig: Use curl_free() to free memory allocated by libcurl
+  - curl: Clean up multi handle on failure
+  - curl: Fix --upload-file . hangs if delay in STDIN
+  - curl: Fix -T globbing
+  - curl: Improved clean-up in upload error path
+  - curl: Make a few char pointers point to const char instead
+  - curl: Properly free mimepost data
+  - curl: Show better error message when no homedir is found
+  - curl: Show error for --http3 if libcurl lacks support
+  - curl_setup_once: Consistently use WHILE_FALSE in macros
+  - define: Remove HAVE_ENGINE_LOAD_BUILTIN_ENGINES, not used anymore
+  - docs: Change 'experiemental' to 'experimental'
+  - docs: TLS SRP doesn't work with TLS 1.3
+  - docs: Fix several typos
+  - docs: Mention CURL_MAX_INPUT_LENGTH restrictions
+  - doh: Improved both encoding and decoding
+  - doh: Make it behave when built without proxy support
+  - examples/postinmemory.c: Always call curl_global_cleanup
+  - examples/url2file.c: Corrected erroneous comment
+  - examples: Add multi-poll.c
+  - global_init: Undo the "initialized" bump in case of failure
+  - hostip: Suppress compiler warning
+  - http_ntlm: Remove duplicate NSS initialization
+  - lib: Move lib/ssh.h → lib/vssh/ssh.h
+  - lib: Fix compiler warnings with 'CURL_DISABLE_VERBOSE_STRINGS'
+  - lib: Fix warnings found when porting to NuttX
+  - lib: Remove ASSIGNWITHINCONDITION exceptions, use our code style
+  - lib: Remove erroneous +x file permission on some c files
+  - libssh2: Add support for ECDSA and ed25519 knownhost keys
+  - multi.h: Remove INITIAL_MAX_CONCURRENT_STREAMS from public header
+  - multi: Free sockhash on OOM
+  - multi_poll: Avoid busy-loop when called without easy handles attached
+  - ngtcp2: Support the latest update key callback type
+  - ngtcp2: Fix thread-safety bug in error-handling
+  - ngtcp2: Free used resources on disconnect
+  - ngtcp2: Handle key updates as ngtcp2 master branch tells us
+  - ngtcp2: Increase QUIC window size when data is consumed
+  - ngtcp2: Use overflow buffer for extra HTTP/3 data
+  - ntlm: USE_WIN32_CRYPTO check removed to get USE_NTLM2SESSION set
+  - ntlm_wb: Fix double-free in OOM
+  - openssl: Revert to less sensitivity for SYSCALL errors
+  - openssl: Improve error message for SYSCALL during connect
+  - openssl: Prevent recursive function calls from ctx callbacks
+  - openssl: Retrieve reported LibreSSL version at runtime
+  - openssl: Set X509_V_FLAG_PARTIAL_CHAIN by default
+  - parsedate: Offer a getdate_capped() alternative
+  - pause: Avoid updating socket if done was already called
+  - projects: Fix Visual Studio projects SSH builds
+  - projects: Fix Visual Studio wolfSSL configurations
+  - quiche: Reject HTTP/3 headers in the wrong order
+  - remove_handle: Clear expire timers after multi_done()
+  - runtests: --repeat=[num] to repeat tests
+  - runtests: Introduce --shallow to reduce huge torture tests
+  - schannel: Fix --tls-max for when min is --tlsv1 or default
+  - setopt: Fix ALPN / NPN user option when built without HTTP2
+  - strerror: Add Curl_winapi_strerror for Win API specific errors
+  - strerror: Fix an error looking up some Windows error strings
+  - strerror: Fix compiler warning "empty expression"
+  - system.h: Fix for MCST lcc compiler
+  - test/sws: Search for "Testno:" header unconditionally if no testno
+  - test1175: Verify symbols-in-versions and libcurl-errors.3 in sync
+  - test1270: A basic -w redirect_url test
+  - test1456: Remove the use of a fixed local port number
+  - test1558: Use double slash after file:
+  - test1560: Require IPv6 for IPv6 aware URL parsing
+  - tests/lib1557: Fix mem-leak in OOM
+  - tests/lib1559: Fix mem-leak in OOM
+  - tests/lib1591: Free memory properly on OOM, in the trailers callback
+  - tests/unit1607: Fix mem-leak in OOM
+  - tests/unit1609: Fix mem-leak in OOM
+  - tests/unit1620: Fix bad free in OOM
+  - tests: Change NTLM tests to require SSL
+  - tests: Fix bounce requests with truncated writes
+  - tests: Fix build with 'CURL_DISABLE_DOH'
+  - tests: Fix permissions of ssh keys in WSL
+  - tests: Make it possible to set executable extensions
+  - tests: Make sure checksrc runs on header files too
+  - tests: Set LC_ALL=en_US.UTF-8 instead of blank in several tests
+  - tests: Use DoH feature for DoH tests
+  - tests: Use \r\n for log messages in WSL
+  - tool_operate: Fix mem leak when failed config parse
+  - travis: Fix error detection
+  - travis: Abandon coveralls, it is not reliable
+  - travis: Build ngtcp2 with --enable-lib-only
+  - travis: Export the CC/CXX variables when set
+  - vtls: Make BearSSL possible to set with CURL_SSL_BACKEND
+  - winbuild: Define CARES_STATICLIB when WITH_CARES=static
+  - winbuild: Document CURL_STATICLIB requirement for static libcurl
+
 * Thu Nov 14 2019 Paul Howarth <paul@city-fan.org> - 7.67.0-2.0.cf
 - Fix infinite loop on upload using a glob (#1771025)
 
