@@ -49,6 +49,13 @@
 %global libssh_minimum_version 1.2
 %endif
 
+# Support http2 via nghttp2 from Fedora 24 onwards, amd on EL
+%if 0%{?fedora} > 24 || 0%{?rhel}
+%global http2_support 1
+%else
+%global http2_support 0
+%endif
+
 # The krb5-devel packages for Fedora 19 and 20 do not include pkgconfig files,
 # which breaks GSSAPI detection in curl 7.78.0 onwards
 # https://github.com/curl/curl/commit/6fe4e7d3
@@ -72,8 +79,8 @@
 # %%make_build only defined from EL-7, F-21 onwards
 %{!?make_build:%global make_build make %{_smp_mflags} V=1}
 
-Version:	7.84.0
-Release:	2.1.kng.%{__distinit}%{__distvers}
+Version:	7.86.0
+Release:	4.0.kng.%{__distinit}%{__distvers}
 %if %{compat}
 Summary:	Curl library for compatibility with old applications
 Name:		libcurl%(echo %{version} | tr -d .)
@@ -88,21 +95,20 @@ License:	MIT
 Source0:	https://curl.se/download/curl-%{version}.tar.xz
 Source1:	curl-pkg-changelog.old
 
-# easy_lock.h: include sched.h if available to fix build
-Patch1:		0001-curl-7.84.0-sched-yield.patch
-
-# Fixes for test3026
-Patch2:		https://github.com/curl/curl/commit/945a81e.patch
-Patch3:		https://github.com/curl/curl/commit/0484127.patch
+# Fix regression in noproxy matching
+Patch1:		0001-curl-7.86.0-noproxy.patch
 
 # Patch making libcurl multilib ready
-Patch101:	0101-curl-7.74.0-multilib.patch
+Patch101:	0101-curl-7.85.0-multilib.patch
 
 # Use localhost6 instead of ip6-localhost in the curl test-suite
 Patch104:	0104-curl-7.76.0-localhost6.patch
 
 # Fix FTBFS when building curl dynamically with no libcurl.so.4 in system
 Patch300:	curl-7.64.1-zsh-cpl.patch
+
+# Kill https proxy server when done with it so we don't run into port-in-use issues later on
+Patch301:	curl-7.86.0-finish-with-https-proxy.patch
 
 # Remove redundant compiler/linker flags from libcurl.pc
 # Assumes %%{_libdir} = /usr/lib or /usr/lib64 and %%{_includedir} = /usr/include
@@ -121,7 +127,7 @@ BuildRequires:	libidn2-devel
 BuildRequires:	openldap-devel
 BuildRequires:	pkgconfig
 BuildRequires:	groff
-%if 0%{?fedora} > 24 || 0%{?rhel}
+%if %{http2_support}
 BuildRequires:	libnghttp2-devel >= 1.12.0
 # nghttpx (an HTTP/2 proxy) is used by the upstream test-suite
 BuildRequires:	nghttp2
@@ -175,6 +181,10 @@ BuildRequires:	python3-devel %{python_impacket}
 BuildRequires:	stunnel
 %endif
 
+# require at least the version of libnghttp2 that we were built against,
+# to ensure that we have the necessary symbols available (#2144277)
+%global libnghttp2_version %(pkg-config --modversion libnghttp2 2>/dev/null || echo 0)
+
 # require at least the version of libpsl that we were built against,
 # to ensure that we have the necessary symbols available (#1631804)
 %global libpsl_version %(pkg-config --modversion libpsl 2>/dev/null || echo 0)
@@ -210,6 +220,9 @@ Requires:	%{libssh}%{?_isa} >= %{libssh_version}
 # same issue with openssl
 %if ! %{use_nss}
 Requires:	openssl-libs%{?_isa} >= 1:%{openssl_version}
+%endif
+%if %{http2_support}
+Requires:	libnghttp2%{?_isa} >= %{libnghttp2_version}
 %endif
 # libnsspem.so is no longer included in the nss package from F-23 onwards (#1347336)
 %if 0%{?fedora} > 22 || 0%{?rhel} > 7
@@ -273,6 +286,9 @@ RemovePathPostfixes:	.minimal
 %if ! %{use_nss}
 Requires:		openssl-libs%{?_isa} >= 1:%{openssl_version}
 %endif
+%if %{http2_support}
+Requires:		libnghttp2%{?_isa} >= %{libnghttp2_version}
+%endif
 
 %description -n libcurl-minimal
 This is a replacement of the 'libcurl' package for minimal installations. It
@@ -295,8 +311,6 @@ cp -p %{SOURCE1} .
 
 # Upstream patches
 %patch1 -p1
-%patch2 -p1
-%patch3 -p1
 
 # Fedora Patches
 %patch101 -p1
@@ -304,6 +318,7 @@ cp -p %{SOURCE1} .
 
 # Local Patches
 %patch300
+%patch301
 %patch302
 
 # Temporarily disable tests 300{0,1} on x86_64 (stunnel clashes with itself)
@@ -313,8 +328,13 @@ printf "3000\n3001\n" >> tests/data/DISABLED
 %endif
 %endif
 
-# Some tests fail on 32-bit Fedora 35?
-# Looks to be due to attempted re-use of ports 24718 and 25313 with port already in use on second test run
+# Some tests fail on 32-bit Fedora 34 and 35?
+# Looks to be due to attempted re-use of ports 24687 and 25139 (F-34) / 24718 and 25313 (F-35) with port already in use on second test run
+%if %([ 0%{?fedora} -eq 34 ] && echo 1 || echo 0)
+%ifnarch x86_64
+printf "2034\n2037\n2041\n" >> tests/data/DISABLED
+%endif
+%endif
 %if %([ 0%{?fedora} -eq 35 ] && echo 1 || echo 0)
 %ifnarch x86_64
 printf "1562\n1630\n1631\n1632\n1904\n2050\n2055\n" >> tests/data/DISABLED
@@ -364,13 +384,12 @@ export common_configure_opts=" \
 %else
 	--without-libidn2 \
 %endif
-%if 0%{?fedora} > 24 || 0%{?rhel}
+%if %{http2_support}
 	--with-nghttp2 \
 %endif
 %if %{use_nss}
 	--with-nss \
 	--with-nss-deprecated \
-	--without-ssl \
 	--without-ca-bundle \
 %else
 	--with-openssl \
@@ -580,6 +599,387 @@ fi
 %exclude %{_libdir}/libcurl.la
 
 %changelog
+* Tue Nov 29 2022 Paul Howarth <paul@city-fan.org> - 7.86.0-4.0.cf
+- noproxy: tailmatch like in 7.85.0 and earlier (#2149224)
+
+* Thu Nov 24 2022 Paul Howarth <paul@city-fan.org> - 7.86.0-3.0.cf
+- Enforce versioned libnghttp2 dependency for libcurl (#2144277)
+
+* Tue Nov  1 2022 Paul Howarth <paul@city-fan.org> - 7.86.0-2.0.cf
+- Fix regression in noproxy matching
+
+* Wed Oct 26 2022 Paul Howarth <paul@city-fan.org> - 7.86.0-1.0.cf
+- Update to 7.86.0
+  - NPN: Remove support for and use of
+  - Websockets: Initial support
+  - altsvc: Reject bad port numbers
+  - altsvc: Use 'h3' for h3
+  - amiga: Do not hard-code openssl/zlib into the os config
+  - amiga: Set SIZEOF_CURL_OFF_T=8 by default
+  - amigaos: Add missing curl header
+  - asyn-ares: Set hint flags when calling ares_getaddrinfo
+  - autotools: Allow --enable-symbol-hiding with Windows
+  - autotools: Allow unix sockets on Windows
+  - autotools: Reduce brute-force when detecting recv/send arg list
+  - aws_sigv4: Fix header computation
+  - bearssl: Make it properly C89 compliant
+  - CI/GHA: Cancel outdated CI runs on new PR changes
+  - CI/GHA: Merge msh3 and openssl3 builds into linux workflow
+  - cirrus-ci: Add macOS build with m1
+  - cirrus: Use make LDFLAGS=-all-static instead of curl_LDFLAGS
+  - cli tool: Do not use disabled protocols
+  - cmake: Add missing inet_ntop check
+  - cmake: Add the check of HAVE_SOCKETPAIR
+  - cmake: Define BUILDING_LIBCURL in lib/CMakeLists, not config.h
+  - cmake: Delete duplicate HAVE_GETADDRINFO test
+  - cmake: Enable more detection on Windows
+  - cmake: Fix original MinGW builds
+  - cmake: Improve usability of CMake build as a sub-project
+  - cmake: Set HAVE_GETADDRINFO_THREADSAFE on Windows
+  - cmake: Set HAVE_SOCKADDR_IN6_SIN6_SCOPE_ID on Windows
+  - cmake: Sync HAVE_SIGNAL detection with autotools
+  - cmdline/docs: Add a required 'multi' keyword for each option
+  - configure: Correct the wording when checking grep -E
+  - configure: Deprecate builds with small curl_off_t
+  - configure: Fail if '--without-ssl' + explicit parameter for an ssl lib
+  - configure: The ngtcp2 option should default to 'no'
+  - connect: Change verbose IPv6 address:port to [address]:port
+  - connect: Fix builds without AF_INET6
+  - connect: Fix Curl_updateconninfo for TRNSPRT_UNIX
+  - connect: Fix the wrong error message on connect failures
+  - content_encoding: Use writer struct subclasses for different encodings
+  - cookie: Reject cookie names or content with TAB characters
+  - ctype: Remove all use of <ctype.h>, use our own versions
+  - curl-compilers.m4: For gcc + want warnings, set gnu89 standard
+  - curl-compilers.m4: Use -O2 as default optimize for clang
+  - curl-wolfssl.m4: Error out if wolfSSL is not usable
+  - curl.h: Fix mention of wrong error code in comment
+  - curl/add_file_name_to_url: Use the libcurl URL parser
+  - curl/add_parallel_transfers: Better error handling
+  - curl/get_url_file_name: Use libcurl URL parser
+  - curl: Warn for --ssl use, considered insecure
+  - curl_ctype: Convert to macros-only
+  - curl_easy_pause.3: Unpausing is as fast as possible
+  - curl_escape.3: Fix typo
+  - curl_setup: Disable use of FLOSS for 64-bit NonStop builds
+  - curl_setup: Include curl.h after platform setup headers
+  - curl_setup: Include only system.h instead of curl.h
+  - curl_strequal.3: Fix argument typo
+  - curl_url_set.3: Document CURLU_APPENDQUERY properly
+  - CURLMOPT_PIPELINING.3: De-dupe manpage xref
+  - CURLOPT_ACCEPT_ENCODING.3: Remove "four" as they are five
+  - CURLOPT_AUTOREFERER.3: Highlight the privacy leak risk
+  - CURLOPT_COOKIEFILE: Insist on "" for enable-without-file
+  - CURLOPT_COOKIELIST.3: Fix formatting mistake
+  - CURLOPT_DNS_INTERFACE.3: Mention it works for almost all protocols
+  - CURLOPT_MIMEPOST.3: Add an (inline) example
+  - CURLOPT_POSTFIELDS.3: Refer to CURLOPT_MIMEPOST
+  - CURLOPT_PROXY_SSLCERT_BLOB.3: This is for HTTPS proxies
+  - CURLOPT_WILDCARDMATCH.3: Fix backslash escaping under single quotes
+  - CURLSHOPT_UNLOCKFUNC.3: The callback has no 'access' argument
+  - DEPRECATE.md: Support for systems without 64 bit data types
+  - docs/examples: Avoid deprecated options in examples where possible
+  - docs/INSTALL: Update Android instructions for newer NDKs
+  - docs/libcurl/symbols-in-versions: Add several missing symbols
+  - docs: 100+ spelling fixes
+  - docs: Correct missing uppercase in Markdown files
+  - docs: Document more server names for test files
+  - docs: Fix deprecation version inconsistencies
+  - docs: Make sure libcurl opts examples pass in long arguments
+  - docs: Remove mentions of deprecated '--without-openssl' parameter
+  - docs: Tag curl options better in man pages
+  - docs: Tell about disabled protocols in CURLOPT_*PROTOCOLS_STR
+  - docs: Update sourceforge project links
+  - easy: Fix the #include order
+  - easy: Fix the altsvc init for curl_easy_duphandle
+  - easy_lock: Check for HAVE_STDATOMIC_H as well
+  - examples/chkspeed: Improve portability
+  - formdata: Fix warning: 'CURLformoption' is promoted to 'int'
+  - ftp: Ignore a 550 response to MDTM
+  - ftp: Remove redundant if
+  - functypes: Provide the recv and send arg and return types
+  - getparameter: Return PARAM_MANUAL_REQUESTED for -M even when disabled
+  - GHA: Build tests in a separate step from the running of them
+  - GHA: Run proselint on markdown files
+  - GitHub: Initial CODEOWNERS setup for CI configuration
+  - header: Define public API functions as extern c
+  - headers: Reset the requests counter at transfer start
+  - hostip: Guard PF_INET6 use
+  - hostip: Lazily wait to figure out if IPv6 works until needed
+  - http, vauth: Always provide Curl_allow_auth_to_host() functionality
+  - http2: Make nghttp2 less picky about field whitespace
+  - HTTP3.md: Update Caddy example
+  - http: Try parsing Retry-After: as a number first
+  - http_proxy: Restore the protocol pointer on error (CVE-2022-42915)
+  - httpput-postfields.c: Shorten string for C89 compliance
+  - ldap: Delete stray CURL_HAS_MOZILLA_LDAP reference
+  - lib1560: Extended to verify detect/reject of unknown schemes
+  - lib517: Fix C89 constant signedness
+  - lib: Add missing limits.h includes
+  - lib: Add required Win32 setup definitions in setup-win32.h
+  - lib: Prepare the incoming of additional protocols
+  - lib: Sanitize conditional exclusion around MIME
+  - lib: Set more flags in config-win32.h
+  - lib: The number four in a sequence is the "fourth"
+  - libssh: If sftp_init fails, don't get the sftp error code
+  - Makefile.m32: De-duplicate build rules
+  - Makefile.m32: Drop CROSSPREFIX and our CC/AR defaults
+  - Makefile.m32: Exclude libs and libpaths for shared mode executables
+  - Makefile.m32: Fix regression with tool_hugehelp
+  - Makefile.m32: Major rework
+  - Makefile.m32: Reintroduce CROSSPREFIX and -W -Wall
+  - Makefile.m32: Support more options
+  - manpage-syntax.pl: All libcurl option symbols should be \fI-tagged
+  - manpages: Fix spelling of "allows to" → "allows one to"
+  - misc: ISSPACE() → ISBLANK()
+  - misc: Use the term "null-terminate" consistently
+  - mprintf: Reject two kinds of precision for the same argument
+  - mprintf: Use snprintf if available
+  - mqtt: Return error for too long topic
+  - mqtt: Spell out CONNECT in comments
+  - msh3: Change the static_assert to make the code C89
+  - netrc: Compare user name case sensitively
+  - netrc: Replace fgets with Curl_get_line (CVE-2022-35260)
+  - netrc: Use the URL-decoded user
+  - ngtcp2: Fix build errors due to changes in ngtcp2 library
+  - ngtcp2: Fix C89 compliance nit
+  - noproxy: Support proxies specified using CIDR notation
+  - openssl: Make certinfo available for QUIC
+  - README.md: Add GHA status badges for Linux and macOS builds
+  - RELEASE-PROCEDURE.md: Mention patch releases
+  - resolve: Make forced IPv4 resolve only use A queries
+  - runtests: Fix uninitialized value on ignored tests
+  - schannel: Ban server ALPN change during recv renegotiation
+  - schannel: Don't reset recv/send function pointers on renegotiation
+  - schannel: When importing PFX, disable key persistence
+  - scripts: Use 'grep -E' instead of 'egrep'
+  - setopt: Use the handler table for protocol name to number conversions
+  - setopt: When POST is set, reset the 'upload' field (CVE-2022-32221)
+  - setup-win32: No longer define UNICODE/_UNICODE implicitly
+  - single_transfer: Use the libcurl URL parser when appending query parts
+  - smb: Replace CURL_WIN32 with WIN32
+  - strcase: Add and use Curl_timestrcmp
+  - strerror: Improve two URL API error messages
+  - symbol-scan.pl: Also check for LIBCURL* symbols
+  - symbol-scan.pl: Scan and verify .3 man pages
+  - symbols-in-versions: Add missing LIBCURL* symbols
+  - symbols-in-versions: CURLOPT_ENCODING is deprecated since 7.21.6
+  - test1119: Scan all public headers
+  - test1275: Verify uppercase after period in markdown
+  - test972: Verify the output without using external tool
+  - tests/certs/scripts: Insert standard curl source headers
+  - tests/Makefile: Remove run time stats from ci-test
+  - tests: Avoid CreateThread if _beginthreadex is available
+  - tests: Fix tag syntax errors in test files
+  - tests: Skip mime/form tests when mime is not built-in
+  - tidy-up: Delete parallel/unused feature flags
+  - tidy-up: Delete unused HAVE_STRUCT_POLLFD
+  - TODO: Provide the error body from a CONNECT response
+  - tool: Avoid generating ambiguous escaped characters in --libcurl
+  - tool: Remove dead code
+  - tool: Reorganize function c_escape around a dynbuf
+  - tool_hugehelp: Make hugehelp a blank macro when disabled
+  - tool_main: Exit at once if out of file descriptors
+  - tool_operate: Avoid a few #ifdefs for disabled-libcurl builds
+  - tool_operate: More transfer clean-up after parallel transfer fail
+  - tool_operate: Prevent over-queuing in parallel mode
+  - tool_operate: Reduce errorbuffer allocs
+  - tool_paramhelp: Asserts verify maximum sizes for string loading
+  - tool_paramhelp: Make the max argument a 'double'
+  - tool_progress: Remove 'Qd' from the parallel progress bar
+  - tool_setopt: Use better English in --libcurl source comments
+  - tool_xattr: Save the original URL, not the final redirected one
+  - unit test 1655: Make it C89-compliant
+  - url: A zero-length userinfo part in the URL is still a (blank) user
+  - url: Allow non-HTTPS HSTS-matching for debug builds
+  - url: Rename function due to name-clash in Watt-32
+  - url: Use IDN decoded names for HSTS checks (CVE-2022-42916)
+  - urlapi: Detect scheme better when not guessing
+  - urlapi: Fix parsing URL without slash with CURLU_URLENCODE
+  - urlapi: Leaner with fewer allocs
+  - urlapi: Reject more bad characters from the host name field
+  - winbuild/MakefileBuild.vc: Handle spaces in libssh(2) include paths
+  - winbuild: Use NMake batch-rules for compilation
+  - windows: Add .rc support to autotools builds
+  - windows: Adjust name of two internal public functions
+  - windows: Autotools .rc warnings fixup
+  - wolfSSL: Fix session management bug
+- Add patch to kill https proxy server after use in test suite
+
+* Wed Aug 31 2022 Paul Howarth <paul@city-fan.org> - 7.85.0-1.0.cf
+- Update to 7.85.0
+  - quic: Add support via wolfSSL
+  - schannel: Add TLS 1.3 support
+  - setopt: Add CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR
+  - amigaos: Fix threaded resolver on AmigaOS 4.x
+  - amissl: Allow AmiSSL to be used with AmigaOS 4.x builds
+  - amissl: Make AmiSSL v5 a minimum requirement
+  - asyn-ares: Make a single alloc out of hostname + async data
+  - asyn-thread: Fix socket leak on OOM
+  - asyn-thread: Make getaddrinfo_complete return CURLcode
+  - base64: base64url encoding has no padding
+  - BUGS.md: Improve language
+  - build: Improve OS string in CMake and 'config-win32.h'
+  - cert.d: Clarify that escape character works for file paths
+  - cirrus.yml: Replace py38-pip with py39-pip
+  - cirrus/freebsd-ci: Bootstrap the pip installer
+  - cmake: Add detection of threadsafe feature
+  - cmake: Do not force Windows target versions
+  - cmake: Fix build for mingw cross compile
+  - cmake: Link curl to its dependencies with PRIVATE
+  - cmake: Remove APPEND in export(TARGETS)
+  - cmake: Set feature PSL if present
+  - cmake: Support ngtcp2 boringssl backend
+  - cmdline-opts/gen.pl: Improve performance
+  - config: Remove the check for and use of SIZEOF_SHORT
+  - configure: -pthread not available on AmigaOS 4.x
+  - configure: Check for the stdatomic.h header in configure
+  - configure: Fix --disable-headers-api
+  - configure: Fix broken m4 syntax in TLS options
+  - configure: Fixup bsdsocket detection code for AmigaOS 4.x
+  - configure: If asked to use TLS, fail if no TLS lib was detected
+  - configure: Introduce CURL_SIZEOF
+  - connect: Add quic connection information
+  - connect: Close the happy eyeballs loser connection when using QUIC
+  - connect: Revert the use of IP*_RECVERR
+  - connect: Set socktype/protocol correctly
+  - cookie: Reject cookies with "control bytes" (CVE-2022-35252)
+  - cookie: Treat a blank domain in Set-Cookie: as non-existing
+  - cookie: Use %%zu to infof() for size_t values
+  - curl-compilers.m4: Make icc use -diag* options and disable two warnings
+  - curl-config: Quote directories with potential space
+  - curl-confopts: Remove leftover AC_REQUIREs
+  - curl-functions.m4: Check whether atomics can link
+  - curl-wolfssl.m4: Add options header when building test code
+  - curl.h: CURLE_CONV_FAILED is obsoleted
+  - curl.h: Include <sys/select.h> on SunOS
+  - curl: Output warning when a cookie is dropped due to size
+  - curl: writeout: Fix repeated header outputs
+  - Curl_close: Call Curl_resolver_cancel to avoid memory leak
+  - curl_easy_header: Add CURLH_PSEUDO to sanity check
+  - curl_mime_data.3: Polish the wording
+  - curl_multi_timeout.3: Clarify usage
+  - CURLINFO_SPEED_UPLOAD/DOWNLOAD.3: Fix examples
+  - CURLOPT_BUFFERSIZE.3: Add upload buffersize to see also
+  - CURLOPT_CONNECT_ONLY.3: Clarify multi API use
+  - CURLOPT_SERVER_RESPONSE_TIMEOUT: The new name
+  - digest: Fix memory leak, fix not quoted 'opaque'
+  - digest: Fix missing increment of 'nc' value for auth-int
+  - digest: Pass over leading spaces in qop values
+  - digest: Reject broken header with session protocol but without qop
+  - docs/cmdline-opts/gen.pl: Encode leading single and double quotes
+  - docs/cmdline-opts: Fix example and categories for --form-escape
+  - docs/cmdline: Mark fail and fail-with-body as mutually exclusive
+  - docs: Add dns category to --resolve
+  - docs: Explain curl_easy_escape/unescape curl handle is ignored
+  - docs: Remove him/her/he/she from documentation
+  - doh: Move doh related struct definitions to doh.h
+  - doh: Use https protocol by default
+  - easy_lock.h: Include sched.h if available to fix build
+  - easy_lock.h: Use __asm__ instead of asm to fix build
+  - easy_lock: Fix build for mingw
+  - easy_lock: Fix build with icc
+  - easy_lock: Fix the #ifdef conditional for ia32_pause
+  - easy_lock: Switch to using atomic_int instead of bool
+  - easyoptions: Fix icc warning
+  - escape: Remove outdated comment
+  - examples/curlx.c: Remove
+  - file: Add handling of native AmigaOS paths
+  - file: Fix icc enumerated type mixed with another type warning
+  - ftp: Use a correct expire ID for timer expiry
+  - getinfo: Return better error on NULL as first argument
+  - GHA: Add two Intel compiler CI jobs
+  - GHA: Move libressl CI from zuul to GitHub
+  - gha: Move over ngtcp2-gnutls CI job from zuul
+  - GHA: Move CI torture test from Zuul
+  - h2h3: Fix overriding the 'TE: Trailers' header
+  - hostip: Resolve *.localhost to 127.0.0.1/::1
+  - HTTP3.md: Update to msh3 v0.4.0
+  - http: Typecast the httpreq assignment to avoid icc compiler warning
+  - http_aws_sigv4.c: Remove two unused includes
+  - http_chunks: Remove an assign + typecast
+  - hyper: Customize test1274 to how hyper unfolds headers
+  - hyper: Enable obs-folded multiline headers
+  - hyper: Use wakers for curl pause/resume
+  - imap: Use ISALNUM() for alphanumeric checks
+  - ldap: Adapt to conn->port now being an 'int'
+  - lib/curl_path.c: Add ISC to license expression
+  - lib3026: Reduce the number of threads to 100
+  - libcurl-security.3: Fix typo on macro "SH_"
+  - libssh2: Make atime/mtime date overflow return error
+  - libssh2: Provide symlink name in SFTP dir listing
+  - libssh: Ignore deprecation warnings
+  - libssh: Make atime/mtime date overflow return error
+  - Makefile.m32: Add 'CURL_RC' and 'CURL_STRIP' variables
+  - Makefile.m32: Add 'NGTCP2_LIBS' option
+  - makefile.m32: Add support for custom ARCH
+  - Makefile.m32: Allow -nghttp3/-ngtcp2 without -ssl
+  - Makefile.m32: Do not set the libcurl.rc debug flag
+  - Makefile.m32: Stop trying to build libcares.a
+  - memdebug: Add annotation attributes
+  - mprintf: Fix *dyn_vprintf() when out of memory
+  - mprintf: Make dprintf_formatf never return negative
+  - msh3: Fix the QUIC disconnect function
+  - multi: Fix the return code from Curl_pgrsDone()
+  - multi: Have curl_multi_remove_handle close CONNECT_ONLY transfer
+  - multi: Use a pipe instead of a socketpair on Apple platforms
+  - multi: Use larger dns hash table for multi interface
+  - multi_wait: Fix and improve Curl_poll error handling on Windows
+  - multi_wait: Fix skipping to populate revents for extra_fds
+  - netrc.d: Remove spurious quote
+  - netrc: Use the password from lines without login
+  - ngtcp2: Fix build error due to change in nghttp3 prototypes
+  - ngtcp2: Fix incompatible function pointer types
+  - ngtcp2: Fix missing initialization of nghttp3_nv.flags
+  - ngtcp2: Fix stall or busy loop on STOP_SENDING with upload data
+  - ngtcp2: Implement cb_h3_stop_sending and cb_h3_reset_stream callbacks
+  - openssl: Add 'CURL_BORINGSSL_VERSION' to identify BoringSSL
+  - openssl: Add cert path in error message
+  - openssl: Add details to "unable to set client certificate" error
+  - openssl: Fix BoringSSL symbol conflicts with LDAP and Schannel
+  - quiche: Fix build failure
+  - select: Do not return fatal error on EINTR from poll()
+  - sendf: Fix paused header writes since after the header API
+  - sendf: Make Curl_debug a void function
+  - sendf: Skip storing HTTP headers if HTTP disabled
+  - sendf: Store the header type in an unsigned char to avoid icc warnings
+  - splay: Avoid using -1 in unsigned variable
+  - test3026: Add support for Windows using native Win32 threads
+  - test3026: Require 'threadsafe'
+  - test44[2-4]: Add '--resolve' to the keywords
+  - tests/server/sockfilt.c: Avoid race condition without a mutex
+  - tests: Fix http2 tests to use CRLF headers
+  - tests: Several enumerated type clean-ups
+  - THANKS: Merged two entries for Evgeny Grin
+  - tidy-up: Delete unused build configuration macros
+  - tool: Re-introduce set file comment code for AmigaOS
+  - tool_cfgable: Make 'synthetic_error' a plain bool
+  - tool_formparse: Fix variable may be used before its value is set
+  - tool_getparam: Make --doh-url "" switch it off
+  - tool_getparam: Repair cleanarg
+  - tool_operate: Better clean-up of easy handle in exit path
+  - tool_paramhlp: Fix "enumerated type mixed with another type"
+  - tool_paramhlp: Make check_protocol return ParameterError
+  - tool_progress: Avoid division by zero in parallel progress meter
+  - tool_writeout: Fix enumerated type mixed with another type
+  - trace: 0x7F character is non-printable
+  - unit1303: Four tests should have TRUE for 'connecting'
+  - url: Enumerated type mixed with another type
+  - url: Really use the user provided in the url when netrc entry exists
+  - url: Reject URLs with hostnames longer than 65535 bytes
+  - url: Treat missing usernames in netrc as empty
+  - urldata: Change second proxytype field to unsigned char to match
+  - urldata: Make 'negnpn' use less storage
+  - urldata: Make state.httpreq an unsigned char
+  - urldata: Make three *_proto struct fields smaller
+  - urldata: Move smaller fields down in connectdata struct
+  - urldata: Reduce size of several struct fields
+  - vtls: Make Curl_ssl_backend() return the enum type curl_sslbackend
+  - Windows: Improve random source
+
+* Thu Aug 25 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-3.0.cf
+- tests: Fix http2 tests to use CRLF headers to make it work with nghttp2-1.49.0
+
 * Mon Aug  8 2022 Paul Howarth <paul@city-fan.org> - 7.84.0-2.1.cf
 - Add upstream fixes for test3026
 
