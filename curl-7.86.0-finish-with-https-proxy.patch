@@ -1,0 +1,12 @@
+--- tests/data/test1632
++++ tests/data/test1632
+@@ -48,6 +48,9 @@ mother knew what became of me.
+ ftp
+ https-proxy
+ </server>
++<killserver>
++https-proxy
++</killserver>
+  <name>
+ FTP through HTTPS-proxy, with connection re-use
+  </name>
