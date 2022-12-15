@@ -300,7 +300,7 @@ cp -p %{SOURCE1} .
 
 # Fedora Patches
 %patch101 -p1
-#%patch104 -p1
+%patch104 -p1
 
 # Local Patches
 %patch300
