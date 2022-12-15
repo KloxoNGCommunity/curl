@@ -329,7 +329,7 @@ printf "3000\n3001\n" >> tests/data/DISABLED
 %endif
 
 # Test 977 has problem in Copr build environment
-printf "997\n" >> tests/data/DISABLED
+printf "977\n" >> tests/data/DISABLED
 
 # Some tests fail on 32-bit Fedora 34 and 35?
 # Looks to be due to attempted re-use of ports 24687 and 25139 (F-34) / 24718 and 25313 (F-35) with port already in use on second test run
